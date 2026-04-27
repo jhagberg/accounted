@@ -23,6 +23,8 @@ import type {
   TrialBalanceRow,
   IncomeStatementReport,
   BalanceSheetReport,
+  ResultatrapportReport,
+  BalansrapportReport,
   VatDeclaration,
   VatPeriodType,
 } from '@/types'
@@ -39,6 +41,8 @@ interface DrillDownStep {
 }
 
 const TAB_LABELS: Record<string, string> = {
+  'resultatrapport': 'Resultatrapport',
+  'balansrapport': 'Balansrapport',
   'trial-balance': 'Saldobalans',
   'income-statement': 'Resultaträkning',
   'balance-sheet': 'Balansräkning',
@@ -47,7 +51,7 @@ const TAB_LABELS: Record<string, string> = {
 
 export default function ReportsPage() {
   const [selectedPeriod, setSelectedPeriod] = useState('')
-  const [activeTab, setActiveTab] = useState('trial-balance')
+  const [activeTab, setActiveTab] = useState('resultatrapport')
   const [isLoadingInit, setIsLoadingInit] = useState(true)
   const { company } = useCompany()
 
@@ -170,8 +174,12 @@ export default function ReportsPage() {
               onChange={(e) => handleTabChange(e.target.value)}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             >
-              <optgroup label="Bokslut">
+              <optgroup label="Löpande rapporter">
+                <option value="resultatrapport">Resultatrapport</option>
+                <option value="balansrapport">Balansrapport</option>
                 <option value="trial-balance">Saldobalans</option>
+              </optgroup>
+              <optgroup label="Bokslut">
                 <option value="income-statement">Resultaträkning</option>
                 <option value="balance-sheet">Balansräkning</option>
               </optgroup>
@@ -193,14 +201,29 @@ export default function ReportsPage() {
           </div>
 
           {/* Desktop: inline grouped tab navigation */}
-          <div className="hidden sm:grid sm:grid-cols-[auto_1px_auto_1px_auto_1px_auto] items-stretch mb-5 rounded-xl border border-border bg-card shadow-sm">
+          <div className="hidden sm:grid sm:grid-cols-[auto_1px_auto_1px_auto_1px_auto_1px_auto] items-stretch mb-5 rounded-xl border border-border bg-card shadow-sm">
+            {/* Löpande rapporter */}
+            <div className="flex flex-col gap-3 px-5 py-4">
+              <span className="text-[11px] font-semibold text-muted-foreground/80 uppercase tracking-[0.1em]">Löpande rapporter</span>
+              <TabsList className="flex flex-col h-auto bg-transparent p-0 gap-1 items-start">
+                <TabsTrigger value="resultatrapport" className="w-full justify-start text-[13px]">
+                  Resultatrapport
+                </TabsTrigger>
+                <TabsTrigger value="balansrapport" className="w-full justify-start text-[13px]">
+                  Balansrapport
+                </TabsTrigger>
+                <TabsTrigger value="trial-balance" className="w-full justify-start text-[13px]">
+                  Saldobalans
+                </TabsTrigger>
+              </TabsList>
+            </div>
+
+            <div className="bg-border" />
+
             {/* Bokslut */}
             <div className="flex flex-col gap-3 px-5 py-4">
               <span className="text-[11px] font-semibold text-muted-foreground/80 uppercase tracking-[0.1em]">Bokslut</span>
               <TabsList className="flex flex-col h-auto bg-transparent p-0 gap-1 items-start">
-                <TabsTrigger value="trial-balance" className="w-full justify-start text-[13px]">
-                  Saldobalans
-                </TabsTrigger>
                 <TabsTrigger value="income-statement" className="w-full justify-start text-[13px]">
                   Resultaträkning
                 </TabsTrigger>
@@ -266,6 +289,12 @@ export default function ReportsPage() {
             </div>
           </div>
 
+          <TabsContent value="resultatrapport">
+            <ResultatrapportView periodId={selectedPeriod} onNavigateToAccount={navigateToAccount} />
+          </TabsContent>
+          <TabsContent value="balansrapport">
+            <BalansrapportView periodId={selectedPeriod} onNavigateToAccount={navigateToAccount} />
+          </TabsContent>
           <TabsContent value="trial-balance">
             <TrialBalanceView periodId={selectedPeriod} onNavigateToAccount={navigateToAccount} />
           </TabsContent>
@@ -819,6 +848,278 @@ function BalanceSheetView({ periodId, onNavigateToAccount }: { periodId: string;
                   Differens: {formatAmount(Math.abs(data.total_assets - data.total_equity_liabilities))} kr
                 </p>
               </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function ResultatrapportView({ periodId, onNavigateToAccount }: { periodId: string; onNavigateToAccount: (account: string) => void }) {
+  const [data, setData] = useState<ResultatrapportReport | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    fetch(`/api/reports/resultatrapport?period_id=${periodId}`)
+      .then((res) => res.json())
+      .then((result) => {
+        if (result.error) {
+          setError(result.error)
+        } else {
+          setData(result.data)
+        }
+        setLoading(false)
+      })
+      .catch(() => {
+        setError('Kunde inte hämta resultatrapport')
+        setLoading(false)
+      })
+  }, [periodId])
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-muted-foreground">
+          Laddar resultatrapport...
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-destructive">
+          <AlertCircle className="h-6 w-6 mx-auto mb-2" />
+          {error}
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!data || data.groups.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-muted-foreground">
+          Inga bokförda intäkter eller kostnader i denna period.
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const hasPrior = data.prior_period !== null
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-[11px] uppercase tracking-wider text-muted-foreground">
+                  <th className="text-left font-medium px-4 py-2 w-20">Konto</th>
+                  <th className="text-left font-medium px-4 py-2">Kontonamn</th>
+                  <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Innevarande</th>
+                  <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Föregående</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.groups.map((group) => (
+                  <React.Fragment key={group.class}>
+                    <tr className="bg-muted/30">
+                      <td colSpan={4} className="px-4 py-2 text-[12px] font-semibold text-muted-foreground">
+                        {group.class_label}
+                      </td>
+                    </tr>
+                    {group.rows.map((row) => (
+                      <tr
+                        key={row.account_number}
+                        className="border-b last:border-0 cursor-pointer hover:bg-muted/50 transition-colors"
+                        onClick={() => onNavigateToAccount(row.account_number)}
+                      >
+                        <td className="px-4 py-1.5">
+                          <AccountNumber number={row.account_number} name={row.account_name} />
+                        </td>
+                        <td className="px-4 py-1.5">{row.account_name}</td>
+                        <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(row.current_period)}</td>
+                        <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">
+                          {hasPrior ? formatAmount(row.prior_period) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-b font-medium">
+                      <td colSpan={2} className="px-4 py-1.5 text-right text-muted-foreground">
+                        Summa
+                      </td>
+                      <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(group.subtotal_current)}</td>
+                      <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">
+                        {hasPrior ? formatAmount(group.subtotal_prior) : '—'}
+                      </td>
+                    </tr>
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-2">
+        <CardContent className="py-4">
+          <div className="grid grid-cols-[1fr_auto_auto] gap-x-6 items-baseline">
+            <span className="font-bold text-lg">Beräknat resultat</span>
+            <span className={`tabular-nums font-bold text-lg w-32 text-right ${data.net_result_current >= 0 ? 'text-success' : 'text-destructive'}`}>
+              {formatAmount(data.net_result_current)} kr
+            </span>
+            <span className="tabular-nums text-base text-muted-foreground w-32 text-right">
+              {hasPrior ? `${formatAmount(data.net_result_prior)} kr` : '—'}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function BalansrapportView({ periodId, onNavigateToAccount }: { periodId: string; onNavigateToAccount: (account: string) => void }) {
+  const [data, setData] = useState<BalansrapportReport | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    fetch(`/api/reports/balansrapport?period_id=${periodId}`)
+      .then((res) => res.json())
+      .then((result) => {
+        if (result.error) {
+          setError(result.error)
+        } else {
+          setData(result.data)
+        }
+        setLoading(false)
+      })
+      .catch(() => {
+        setError('Kunde inte hämta balansrapport')
+        setLoading(false)
+      })
+  }, [periodId])
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-muted-foreground">
+          Laddar balansrapport...
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-destructive">
+          <AlertCircle className="h-6 w-6 mx-auto mb-2" />
+          {error}
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!data || data.groups.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-muted-foreground">
+          Inga balansposter i denna period.
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-[11px] uppercase tracking-wider text-muted-foreground">
+                  <th className="text-left font-medium px-4 py-2 w-20">Konto</th>
+                  <th className="text-left font-medium px-4 py-2">Kontonamn</th>
+                  <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Ingående balans</th>
+                  <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Utgående balans</th>
+                  <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Förändring</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.groups.map((group) => (
+                  <React.Fragment key={group.class}>
+                    <tr className="bg-muted/30">
+                      <td colSpan={5} className="px-4 py-2 text-[12px] font-semibold text-muted-foreground">
+                        {group.class_label}
+                      </td>
+                    </tr>
+                    {group.rows.map((row) => (
+                      <tr
+                        key={row.account_number}
+                        className="border-b last:border-0 cursor-pointer hover:bg-muted/50 transition-colors"
+                        onClick={() => onNavigateToAccount(row.account_number)}
+                      >
+                        <td className="px-4 py-1.5">
+                          <AccountNumber number={row.account_number} name={row.account_name} />
+                        </td>
+                        <td className="px-4 py-1.5">{row.account_name}</td>
+                        <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">{formatAmount(row.ib)}</td>
+                        <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(row.ub)}</td>
+                        <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">{formatAmount(row.period_change)}</td>
+                      </tr>
+                    ))}
+                    <tr className="border-b font-medium">
+                      <td colSpan={2} className="px-4 py-1.5 text-right text-muted-foreground">
+                        Summa
+                      </td>
+                      <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">{formatAmount(group.subtotal_ib)}</td>
+                      <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(group.subtotal_ub)}</td>
+                      <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">
+                        {formatAmount(group.subtotal_ub - group.subtotal_ib)}
+                      </td>
+                    </tr>
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-2">
+        <CardContent className="py-4 space-y-2">
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Summa tillgångar</span>
+            <span className="tabular-nums">{formatAmount(data.total_assets_ub)} kr</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Summa eget kapital, reserver, avsättningar och skulder</span>
+            <span className="tabular-nums">{formatAmount(data.total_equity_liabilities_ub)} kr</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Beräknat resultat (ej bokslutsjusterat)</span>
+            <span className="tabular-nums">{formatAmount(data.beraknat_resultat)} kr</span>
+          </div>
+          <div className="flex justify-between items-center pt-2 border-t">
+            <span className="font-bold text-lg">Balanscheck</span>
+            {data.is_balanced ? (
+              <Badge className="bg-success/10 text-success text-base px-3 py-1">
+                Balanserar
+              </Badge>
+            ) : (
+              <Badge variant="destructive" className="text-base px-3 py-1">
+                Balanserar ej
+              </Badge>
             )}
           </div>
         </CardContent>

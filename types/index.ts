@@ -1217,6 +1217,54 @@ export interface BalanceSheetReport {
   period: { start: string; end: string }
 }
 
+export interface ResultatrapportRow {
+  account_number: string
+  account_name: string
+  current_period: number
+  prior_period: number
+}
+
+export interface ResultatrapportGroup {
+  class: number
+  class_label: string
+  rows: ResultatrapportRow[]
+  subtotal_current: number
+  subtotal_prior: number
+}
+
+export interface ResultatrapportReport {
+  groups: ResultatrapportGroup[]
+  net_result_current: number
+  net_result_prior: number
+  period: { start: string; end: string }
+  prior_period: { start: string; end: string } | null
+}
+
+export interface BalansrapportRow {
+  account_number: string
+  account_name: string
+  ib: number
+  ub: number
+  period_change: number
+}
+
+export interface BalansrapportGroup {
+  class: number
+  class_label: string
+  rows: BalansrapportRow[]
+  subtotal_ib: number
+  subtotal_ub: number
+}
+
+export interface BalansrapportReport {
+  groups: BalansrapportGroup[]
+  total_assets_ub: number
+  total_equity_liabilities_ub: number
+  beraknat_resultat: number
+  is_balanced: boolean
+  period: { start: string; end: string }
+}
+
 export interface SIEExportOptions {
   fiscal_period_id: string
   company_name: string
