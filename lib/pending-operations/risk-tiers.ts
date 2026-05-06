@@ -26,6 +26,11 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   categorize_transaction: 'medium',
   match_transaction_invoice: 'medium',
   create_invoice: 'medium', // creates as draft; sending is a separate op
+  // Pinning a doc to a tx is reversible while pre-categorization, but the link
+  // becomes part of the verifikation underlag (BFL 5 kap 6 §) once categorize
+  // propagates it. A wrong attachment requires a rättelse, so require human
+  // approval rather than auto-commit.
+  attach_document_to_transaction: 'medium',
 
   // ── High: irreversible, compliance-critical, or external side-effects
   send_invoice: 'high',          // emails the customer

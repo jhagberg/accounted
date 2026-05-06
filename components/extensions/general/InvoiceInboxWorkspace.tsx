@@ -18,11 +18,19 @@ import {
   AlertTriangle,
   ArrowRight,
   Plus,
+  Link2,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatCurrency } from '@/lib/utils'
 import type { WorkspaceComponentProps } from '@/lib/extensions/workspace-registry'
 import type { InvoiceExtractionResult } from '@/types'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog'
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -105,6 +113,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
   const [isDeleting, setIsDeleting] = useState(false)
   const [isRotating, setIsRotating] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  const [attachOpen, setAttachOpen] = useState(false)
 
   // ── Data loading ───────────────────────────────────────────
 
@@ -409,6 +418,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
             <FieldsRail
               item={selected}
               onDelete={() => handleDelete(selected.id)}
+              onAttach={() => setAttachOpen(true)}
               isDeleting={isDeleting}
             />
           ) : (
@@ -419,8 +429,179 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         </aside>
       </div>
     </div>
+
+    {selected && (
+      <AttachToTransactionDialog
+        open={attachOpen}
+        onOpenChange={setAttachOpen}
+        item={selected}
+        onAttached={async () => {
+          setAttachOpen(false)
+          await fetchItems()
+          toast({ title: 'Bilaga kopplad till transaktion' })
+        }}
+      />
+    )}
     </div>
   )
+}
+
+// ── Attach-to-transaction dialog ─────────────────────────────
+
+interface PickerTransaction {
+  id: string
+  date: string
+  description: string
+  amount: number
+  currency: string
+}
+
+function AttachToTransactionDialog({
+  open,
+  onOpenChange,
+  item,
+  onAttached,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  item: InboxItem
+  onAttached: () => void | Promise<void>
+}) {
+  const { toast } = useToast()
+  const [transactions, setTransactions] = useState<PickerTransaction[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [attachingId, setAttachingId] = useState<string | null>(null)
+
+  const targetAmount = pickAmount(item)
+  const targetCurrency = pickCurrency(item)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setIsLoading(true)
+    ;(async () => {
+      try {
+        const res = await fetch('/api/transactions?unmatched=true')
+        const json = await res.json()
+        if (cancelled) return
+        const rows: PickerTransaction[] = (Array.isArray(json.data) ? json.data : [])
+          .map((t: PickerTransaction) => ({
+            id: t.id,
+            date: t.date,
+            description: t.description,
+            amount: t.amount,
+            currency: t.currency || 'SEK',
+          }))
+        setTransactions(rankByAmount(rows, targetAmount, targetCurrency))
+      } catch (err) {
+        console.error('[invoice-inbox/attach] fetch failed:', err)
+        toast({ title: 'Kunde inte ladda transaktioner', variant: 'destructive' })
+      } finally {
+        if (!cancelled) setIsLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open, targetAmount, targetCurrency, toast])
+
+  const handleAttach = async (tx: PickerTransaction) => {
+    if (!item.document_id) return
+    setAttachingId(tx.id)
+    try {
+      const res = await fetch(`/api/transactions/${tx.id}/attach-document`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_id: item.document_id }),
+      })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        toast({ title: json.error || 'Kunde inte koppla bilaga', variant: 'destructive' })
+        return
+      }
+      await onAttached()
+    } finally {
+      setAttachingId(null)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Koppla bilaga till transaktion</DialogTitle>
+          <DialogDescription>
+            {targetAmount != null
+              ? `Belopp på fakturan: ${formatCurrency(targetAmount, pickCurrency(item))}. Listan är sorterad efter beloppsmatch.`
+              : 'Välj en transaktion att koppla bilagan till.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] overflow-y-auto -mx-6 px-6">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Laddar transaktioner…
+            </div>
+          ) : transactions.length === 0 ? (
+            <p className="py-12 text-center text-sm text-muted-foreground">
+              Inga okategoriserade transaktioner hittades.
+            </p>
+          ) : (
+            <ul className="divide-y">
+              {transactions.map((tx) => (
+                <li key={tx.id}>
+                  <button
+                    type="button"
+                    className="w-full flex items-center justify-between gap-4 px-1 py-3 text-left hover:bg-accent/40 disabled:opacity-50"
+                    onClick={() => handleAttach(tx)}
+                    disabled={attachingId !== null}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium truncate">{tx.description}</p>
+                      <p className="text-xs text-muted-foreground">{tx.date}</p>
+                    </div>
+                    <span
+                      className={cn(
+                        'text-sm tabular-nums whitespace-nowrap',
+                        targetAmount != null
+                          && tx.currency === targetCurrency
+                          && Math.abs(Math.abs(tx.amount) - Math.abs(targetAmount)) < 0.01
+                          ? 'font-semibold'
+                          : '',
+                      )}
+                    >
+                      {formatCurrency(tx.amount, tx.currency)}
+                    </span>
+                    {attachingId === tx.id && <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function rankByAmount(
+  rows: PickerTransaction[],
+  target: number | null,
+  targetCurrency: string,
+): PickerTransaction[] {
+  if (target == null) return rows
+  const t = Math.abs(target)
+  // Same-currency rows rank by amount distance. Cross-currency rows go to
+  // the bottom — comparing a EUR invoice's amount to a SEK transaction's
+  // amount numerically would be misleading and could cause a wrong attachment
+  // (which then becomes verifikation underlag, BFL 5 kap 6 §). The user can
+  // still manually pick a cross-currency match by scrolling down.
+  return [...rows].sort((a, b) => {
+    const aMatch = a.currency === targetCurrency
+    const bMatch = b.currency === targetCurrency
+    if (aMatch !== bMatch) return aMatch ? -1 : 1
+    if (!aMatch) return 0
+    const da = Math.abs(Math.abs(a.amount) - t)
+    const db = Math.abs(Math.abs(b.amount) - t)
+    return da - db
+  })
 }
 
 // ── List row ─────────────────────────────────────────────────
@@ -567,10 +748,12 @@ function EmptyPreview({
 function FieldsRail({
   item,
   onDelete,
+  onAttach,
   isDeleting,
 }: {
   item: InboxItem
   onDelete: () => void
+  onAttach: () => void
   isDeleting: boolean
 }) {
   const data = item.extracted_data
@@ -636,11 +819,24 @@ function FieldsRail({
             </Button>
           </Link>
         ) : (
-          <Link href={`/supplier-invoices/new?inbox_item_id=${item.id}`} className="block">
-            <Button variant="default" size="sm" className="w-full">
-              Skapa leverantörsfaktura
+          <>
+            <Button
+              variant="default"
+              size="sm"
+              className="w-full"
+              onClick={onAttach}
+              disabled={!item.document_id}
+              title={!item.document_id ? 'Ingen bilaga att koppla' : undefined}
+            >
+              <Link2 className="h-3.5 w-3.5 mr-1.5" />
+              Koppla till transaktion
             </Button>
-          </Link>
+            <Link href={`/supplier-invoices/new?inbox_item_id=${item.id}`} className="block">
+              <Button variant="outline" size="sm" className="w-full">
+                Skapa leverantörsfaktura
+              </Button>
+            </Link>
+          </>
         )}
         <Button
           variant="ghost"

@@ -352,6 +352,10 @@ export interface Transaction {
   // Receipt link
   receipt_id: string | null
 
+  // Inbox/upload document pinned to this transaction (pre-categorization).
+  // Propagates to document_attachments.journal_entry_id on categorize.
+  document_id: string | null
+
   // Reconciliation
   reconciliation_method: ReconciliationMethod | null
 
@@ -1317,6 +1321,8 @@ export type PendingOperationType =
   | 'explain_voucher_gap'
   // Stream 1 Phase 1: transaction reversal
   | 'uncategorize_transaction'
+  // Document inbox: pin doc to bank transaction
+  | 'attach_document_to_transaction'
   // Stream 1 Phase 1: supplier invoice lifecycle
   | 'approve_supplier_invoice'
   | 'credit_supplier_invoice'

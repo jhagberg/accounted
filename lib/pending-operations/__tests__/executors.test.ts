@@ -353,3 +353,104 @@ describe('commitPendingOperation: credit_invoice', () => {
     expect(result.http_status).toBe(400)
   })
 })
+
+// ─── attach_document_to_transaction ─────────────────────────────────
+
+describe('commitPendingOperation: attach_document_to_transaction', () => {
+  const baseOp: Partial<PendingOperation> = {
+    operation_type: 'attach_document_to_transaction',
+    params: { transaction_id: 'tx-1', document_id: 'doc-1' },
+  }
+
+  it('auto-rejects 404 when transaction is not in the company', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // tx fetch — not found
+    enqueue({ data: null, error: null }) // dispatcher reject update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('rejected')
+    expect(result.http_status).toBe(404)
+  })
+
+  it('auto-rejects 409 when existing pinned doc is räkenskapsinformation', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-1', document_id: 'doc-old', journal_entry_id: null }, error: null })
+    enqueue({ data: { journal_entry_id: 'je-99' }, error: null }) // existing doc fetch — locked
+    enqueue({ data: null, error: null }) // dispatcher reject update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('rejected')
+    expect(result.http_status).toBe(409)
+  })
+
+  it('translates BFL_DOCUMENT_IMMUTABILITY trigger error into auto-reject 409', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-1', document_id: null, journal_entry_id: null }, error: null })
+    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
+    enqueue({
+      data: null,
+      error: {
+        code: 'P0001',
+        message: 'BFL_DOCUMENT_IMMUTABILITY: cannot detach or swap document …',
+      },
+    })
+    enqueue({ data: null, error: null }) // dispatcher reject update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('rejected')
+    expect(result.http_status).toBe(409)
+  })
+
+  it('happy path uncategorized: attaches without propagation', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-1', document_id: null, journal_entry_id: null }, error: null })
+    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: null }, error: null }) // UPDATE returning
+    enqueue({ data: null, error: null }) // dispatcher commit update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('committed')
+  })
+
+  it('propagates to journal entry when tx was categorized between staging and commit', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-1', document_id: null, journal_entry_id: null }, error: null })
+    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
+    enqueue({ data: { journal_entry_id: 'je-7' }, error: null }) // UPDATE returning post-state
+    enqueue({ data: null, error: null }) // doc propagation update
+    enqueue({ data: null, error: null }) // dispatcher commit update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('committed')
+  })
+})

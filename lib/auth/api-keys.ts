@@ -83,6 +83,9 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_upload_document:                 'transactions:write',
   gnubok_list_inbox_items:                'transactions:read',
   gnubok_get_inbox_item:                  'transactions:read',
+  gnubok_list_unmatched_documents:        'transactions:read',
+  gnubok_get_document_content:            'transactions:read',
+  gnubok_attach_document_to_transaction:  'transactions:write',
   // Payroll
   gnubok_list_employees:                  'payroll:read',
   gnubok_get_salary_run:                  'payroll:read',

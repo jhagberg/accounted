@@ -655,6 +655,12 @@ export default function SwipeCategorizationView({
                         Kvitto
                       </Badge>
                     )}
+                    {currentTransaction.document_id && (
+                      <Badge variant="secondary" className="gap-1">
+                        <Paperclip className="h-3 w-3" />
+                        Bilaga
+                      </Badge>
+                    )}
                     <Badge>{currentTransaction.currency}</Badge>
                   </div>
                 </div>
