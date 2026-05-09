@@ -16,8 +16,5 @@ export const config = {
      * - Static assets (images, scripts, manifest, icons, etc.)
      */
     '/((?!_next/static|_next/image|favicon.ico|api|\\.well-known|sw\\.js|sw-register\\.js|manifest\\.json|icons/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|json)$).*)',
-    // Also run on /api/salary/* so the feature-gate block reaches those
-    // routes (they're disabled while the salary module is "Kommer snart").
-    '/api/salary/:path*',
   ],
 }

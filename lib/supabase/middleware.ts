@@ -42,18 +42,6 @@ export async function updateSession(request: NextRequest) {
   // Get the pathname
   const pathname = request.nextUrl.pathname
 
-  // Salary feature is temporarily disabled in production — block page and API
-  // routes. Sidebar links render as "Kommer snart" and direct URL access is
-  // blocked. Local dev (NODE_ENV === 'development') keeps everything enabled
-  // so we can continue building the feature.
-  const SALARY_DISABLED = process.env.NODE_ENV !== 'development'
-  if (SALARY_DISABLED && (pathname === '/salary' || pathname.startsWith('/salary/') || pathname.startsWith('/api/salary/'))) {
-    if (pathname.startsWith('/api/')) {
-      return NextResponse.json({ error: 'Lön är inte tillgängligt ännu.' }, { status: 404 })
-    }
-    return NextResponse.redirect(new URL('/', request.url))
-  }
-
   // If the refresh token is stale/invalid, clear the session cookies
   // so the browser stops sending them on every request.
   // Skip on auth routes — the callback needs PKCE cookies intact.
