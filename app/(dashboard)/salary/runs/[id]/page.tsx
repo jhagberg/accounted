@@ -16,6 +16,8 @@ import { formatCurrency } from '@/lib/utils'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { SalaryRun, SalaryRunEmployee, Employee, CreateJournalEntryLineInput } from '@/types'
 import { AGIPanel } from '@/components/salary/AGIPanel'
+import { PaymentFilePanel } from '@/components/salary/PaymentFilePanel'
+import { TaxPaymentPanel } from '@/components/salary/TaxPaymentPanel'
 
 type SalaryRunWithArbetsgivare = SalaryRun & { arbetsgivare?: string | null }
 
@@ -60,12 +62,25 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [addEmployeeKey, setAddEmployeeKey] = useState(0)
+  const [preferredPaymentFormat, setPreferredPaymentFormat] = useState<'bg_lb' | 'pain001'>('bg_lb')
+  const [taxPayment, setTaxPayment] = useState<{
+    tax_payment_file_generated_at: string | null
+    tax_paid_at: string | null
+  } | null>(null)
 
   async function loadRun() {
     const res = await fetch(`/api/salary/runs/${id}`)
     if (res.ok) {
       const { data } = await res.json()
       setRun(data)
+      if (data?.period_year && data?.period_month) {
+        const period = `${data.period_year}-${String(data.period_month).padStart(2, '0')}`
+        const txRes = await fetch(`/api/skatteverket/tax-payments/${period}`)
+        if (txRes.ok) {
+          const tx = await txRes.json()
+          setTaxPayment(tx.data)
+        }
+      }
     }
   }
 
@@ -76,6 +91,13 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
       if (empRes.ok) {
         const { data } = await empRes.json()
         setAvailableEmployees(data || [])
+      }
+      const settingsRes = await fetch('/api/settings')
+      if (settingsRes.ok) {
+        const { data } = await settingsRes.json()
+        if (data?.preferred_payment_format === 'pain001' || data?.preferred_payment_format === 'bg_lb') {
+          setPreferredPaymentFormat(data.preferred_payment_format)
+        }
       }
       setLoading(false)
     }
@@ -124,8 +146,16 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
     setActionLoading('calculate')
     const res = await fetch(`/api/salary/runs/${id}/calculate`, { method: 'POST' })
     if (res.ok) {
+      const payload = await res.json()
       await loadRun()
-      toast({ title: 'Beräkning klar' })
+      const warnings = (payload.warnings as string[] | undefined) ?? []
+      if (warnings.length === 0) {
+        toast({ title: 'Beräkning klar' })
+      } else {
+        for (const warning of warnings) {
+          toast({ title: 'Att kontrollera', description: warning })
+        }
+      }
     } else {
       const result = await res.json()
       toast({
@@ -377,6 +407,32 @@ export default function SalaryRunDetailPage({ params }: { params: Promise<{ id: 
             ))}
           </CardContent>
         </Card>
+      )}
+
+      {/* Payment file — available once the run is approved */}
+      {['approved', 'paid', 'booked'].includes(run.status) && (
+        <PaymentFilePanel
+          salaryRunId={id}
+          periodLabel={periodLabel}
+          paymentFileFormat={run.payment_file_format}
+          paymentFileGeneratedAt={run.payment_file_generated_at}
+          defaultFormat={preferredPaymentFormat}
+          readOnly={!canWrite}
+          onDownloaded={loadRun}
+        />
+      )}
+
+      {/* Tax payment (skatt + arbetsgivaravgifter) — once AGI has been generated */}
+      {run.status === 'booked' && run.agi_generated_at && (
+        <TaxPaymentPanel
+          period={periodLabel}
+          totalTax={run.total_tax}
+          totalAvgifter={run.total_avgifter}
+          paymentFileGeneratedAt={taxPayment?.tax_payment_file_generated_at ?? null}
+          taxPaidAt={taxPayment?.tax_paid_at ?? null}
+          readOnly={!canWrite}
+          onChange={loadRun}
+        />
       )}
 
       {/* AGI (Arbetsgivardeklaration) — available once the run is booked */}

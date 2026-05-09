@@ -39,6 +39,31 @@ function getApiGwClientSecret(): string {
 }
 
 /**
+ * Kill switch: when SKATTEVERKET_DISABLED=true, all SKV API calls fail with a
+ * single, clear Swedish error. Useful during incidents (provider outage, key
+ * rotation, suspended access) to surface a graceful failure mode instead of
+ * letting requests hang or leak partial state.
+ */
+function isDisabled(): boolean {
+  const v = (process.env.SKATTEVERKET_DISABLED ?? '').toLowerCase()
+  return v === 'true' || v === '1' || v === 'yes'
+}
+
+/**
+ * Detect whether we're pointed at SKV's test or prod environment.
+ * Used by the UI to surface an obvious badge so the user knows whether their
+ * filings will hit Skatteverket's production system.
+ */
+export function getSkatteverketEnvironment(): 'test' | 'prod' {
+  const baseUrl =
+    process.env.SKATTEVERKET_API_BASE_URL ||
+    process.env.SKATTEVERKET_AGD_INLAMNING_API_BASE_URL ||
+    process.env.SKATTEVERKET_SKATTEKONTO_API_BASE_URL ||
+    DEFAULT_API_BASE_URL
+  return baseUrl.includes('api.test.skatteverket.se') ? 'test' : 'prod'
+}
+
+/**
  * Ensure rate limit compliance (4 req/sec).
  * Delays if the last request was too recent.
  */
@@ -146,6 +171,12 @@ export async function skvRequest(
   body?: unknown,
   options?: { baseUrl?: string; contentType?: string }
 ): Promise<Response> {
+  if (isDisabled()) {
+    throw new SkatteverketAuthError(
+      'Skatteverket-integrationen är tillfälligt avstängd. Kontakta support.',
+      'ACCESS_DENIED'
+    )
+  }
   const accessToken = await getValidToken(supabase, userId)
 
   await enforceRateLimit()

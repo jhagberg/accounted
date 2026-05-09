@@ -82,6 +82,17 @@ export async function POST(
 
     if (!emp?.email) {
       skipped++
+      // Persist a 'skipped' record so the audit trail is complete (BFL 7 kap.).
+      // Use a placeholder address since the column is NOT NULL.
+      await supabase.from('salary_payslip_deliveries').insert({
+        company_id: companyId,
+        salary_run_id: id,
+        employee_id: sre.employee_id,
+        user_id: user.id,
+        email_address: '(saknas)',
+        status: 'skipped',
+        error_message: 'Anställd saknar e-postadress',
+      })
       continue
     }
 
@@ -128,7 +139,7 @@ export async function POST(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pdfBuffer = await renderToBuffer(PayslipPDF({ data }) as any)
 
-      await emailService.sendEmail({
+      const sendResult = await emailService.sendEmail({
         to: emp.email,
         subject: `Lönespecifikation ${monthName} ${run.period_year} — ${company.name}`,
         html: `<p>Hej ${emp.first_name},</p>
@@ -142,10 +153,48 @@ export async function POST(
         }],
       })
 
+      if (!sendResult.success) {
+        const msg = sendResult.error || 'E-postlevereantör returnerade ett fel'
+        errors.push(`${emp.first_name} ${emp.last_name}: ${msg}`)
+        await supabase.from('salary_payslip_deliveries').insert({
+          company_id: companyId,
+          salary_run_id: id,
+          employee_id: sre.employee_id,
+          user_id: user.id,
+          email_address: emp.email,
+          status: 'failed',
+          provider: 'resend',
+          error_message: msg.slice(0, 500),
+        })
+        continue
+      }
+
+      await supabase.from('salary_payslip_deliveries').insert({
+        company_id: companyId,
+        salary_run_id: id,
+        employee_id: sre.employee_id,
+        user_id: user.id,
+        email_address: emp.email,
+        status: 'sent',
+        provider: 'resend',
+        provider_message_id: sendResult.messageId ?? null,
+      })
+
       sent++
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Okänt fel'
       errors.push(`${emp.first_name} ${emp.last_name}: ${msg}`)
+
+      await supabase.from('salary_payslip_deliveries').insert({
+        company_id: companyId,
+        salary_run_id: id,
+        employee_id: sre.employee_id,
+        user_id: user.id,
+        email_address: emp.email,
+        status: 'failed',
+        provider: 'resend',
+        error_message: msg.slice(0, 500),
+      })
     }
   }
 

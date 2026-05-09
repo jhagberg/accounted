@@ -3,19 +3,21 @@ import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
-import { generatePain001 } from '@/lib/salary/payment/pain001-generator'
-import { getBranding } from '@/lib/branding/service'
-import type { Pain001CompanyData, Pain001Employee } from '@/lib/salary/payment/pain001-generator'
+import { generateBgLb } from '@/lib/salary/payment/bg-lb-generator'
+import { validateBankgiroNumber } from '@/lib/bankgiro/luhn'
+import type { BgLbCompanyData, BgLbEmployee } from '@/lib/salary/payment/bg-lb-generator'
 
 ensureInitialized()
 
 /**
- * Generate pain.001 (ISO 20022) payment file for a salary run.
+ * Generate Bankgirot LB-fil for a salary run.
  *
- * Per BFL: The payment file is räkenskapsinformation/underlag linked to
- * the salary journal entry. Subject to 7-year retention.
+ * Used by Swedish banks (Swedbank, SEB, Handelsbanken, Nordea) for batch
+ * salary payments via the corporate portal. The file is uploaded; Bankgirot
+ * routes funds from the company's BG to each employee's bank account.
  *
- * The file is uploaded to the bank's corporate portal for batch payment.
+ * Per BFL: The payment file is räkenskapsinformation linked to the salary
+ * journal entry. Subject to 7-year retention.
  */
 export async function GET(
   request: Request,
@@ -31,7 +33,6 @@ export async function GET(
 
   const companyId = await requireCompanyId(supabase, user.id)
 
-  // Load salary run
   const { data: run } = await supabase
     .from('salary_runs')
     .select('*')
@@ -47,28 +48,36 @@ export async function GET(
     return NextResponse.json({ error: 'Betalfil kan bara genereras efter godkännande' }, { status: 400 })
   }
 
-  // Load company + settings
   const { data: company } = await supabase
     .from('companies')
-    .select('name, org_number')
+    .select('name')
     .eq('id', companyId)
-    .single()
-
-  const { data: settings } = await supabase
-    .from('company_settings')
-    .select('iban, bic')
-    .eq('company_id', companyId)
     .single()
 
   if (!company) {
     return NextResponse.json({ error: 'Företag hittades inte' }, { status: 404 })
   }
 
-  if (!settings?.iban || !settings?.bic) {
-    return NextResponse.json({ error: 'IBAN och BIC krävs i företagsinställningar för betalfil' }, { status: 400 })
+  const { data: settings } = await supabase
+    .from('company_settings')
+    .select('bankgiro')
+    .eq('company_id', companyId)
+    .single()
+
+  if (!settings?.bankgiro) {
+    return NextResponse.json(
+      { error: 'Bankgironummer saknas i företagsinställningar. Krävs för Bankgirot LB-fil.' },
+      { status: 400 }
+    )
   }
 
-  // Load employees
+  if (!validateBankgiroNumber(settings.bankgiro)) {
+    return NextResponse.json(
+      { error: 'Bankgironumret i företagsinställningar är ogiltigt (felaktig kontrollsiffra).' },
+      { status: 400 }
+    )
+  }
+
   const { data: runEmployees } = await supabase
     .from('salary_run_employees')
     .select('*, employee:employees(first_name, last_name, clearing_number, bank_account_number)')
@@ -78,29 +87,32 @@ export async function GET(
     return NextResponse.json({ error: 'Inga anställda i lönekörningen' }, { status: 400 })
   }
 
-  // Validate all employees have bank accounts
-  const missingBank = runEmployees.filter(sre => {
+  const missingBank = runEmployees.filter((sre) => {
     const emp = sre.employee as { clearing_number: string | null; bank_account_number: string | null } | null
     return !emp?.clearing_number || !emp?.bank_account_number
   })
 
   if (missingBank.length > 0) {
-    return NextResponse.json({
-      error: `${missingBank.length} anställd(a) saknar bankkontouppgifter`,
-    }, { status: 400 })
+    return NextResponse.json(
+      { error: `${missingBank.length} anställd(a) saknar bankkontouppgifter` },
+      { status: 400 }
+    )
   }
 
-  const companyData: Pain001CompanyData = {
+  const companyData: BgLbCompanyData = {
     name: company.name,
-    orgNumber: company.org_number || '',
-    iban: settings.iban,
-    bic: settings.bic,
+    senderBankgiro: settings.bankgiro,
   }
 
-  const employees: Pain001Employee[] = runEmployees
-    .filter(sre => sre.net_salary > 0)
-    .map(sre => {
-      const emp = sre.employee as { first_name: string; last_name: string; clearing_number: string; bank_account_number: string }
+  const employees: BgLbEmployee[] = runEmployees
+    .filter((sre) => sre.net_salary > 0)
+    .map((sre) => {
+      const emp = sre.employee as {
+        first_name: string
+        last_name: string
+        clearing_number: string
+        bank_account_number: string
+      }
       return {
         name: `${emp.first_name} ${emp.last_name}`,
         clearingNumber: emp.clearing_number,
@@ -110,27 +122,34 @@ export async function GET(
     })
 
   const periodLabel = `${run.period_year}-${String(run.period_month).padStart(2, '0')}`
-  const messageId = `${getBranding().appName.toUpperCase()}-${company.org_number?.replace('-', '')}-${periodLabel}`
 
-  const xml = generatePain001(companyData, employees, {
-    messageId,
-    paymentDate: run.payment_date,
-    periodLabel,
-  })
+  let result
+  try {
+    result = generateBgLb(companyData, employees, {
+      paymentDate: run.payment_date,
+      periodLabel,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Kunde inte generera Bankgirot LB-fil'
+    return NextResponse.json({ error: msg }, { status: 400 })
+  }
 
   await supabase
     .from('salary_runs')
     .update({
-      payment_file_format: 'pain001',
+      payment_file_format: 'bg_lb',
       payment_file_generated_at: new Date().toISOString(),
     })
     .eq('id', id)
     .eq('company_id', companyId)
 
-  return new Response(xml, {
+  // ISO 8859-1 encoding — re-encode the JS string to Latin-1 bytes.
+  const buffer = Buffer.from(result.content, 'latin1')
+
+  return new Response(buffer, {
     headers: {
-      'Content-Type': 'application/xml; charset=utf-8',
-      'Content-Disposition': `attachment; filename="pain001_lon_${periodLabel}.xml"`,
+      'Content-Type': 'text/plain; charset=iso-8859-1',
+      'Content-Disposition': `attachment; filename="${result.filename}"`,
     },
   })
 }

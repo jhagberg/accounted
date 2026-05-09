@@ -141,6 +141,11 @@ export const POST = withRouteContext(
   const periodEndDate = new Date(Date.UTC(periodYear, periodMonth, 0)) // last day of month
   const periodEnd = periodEndDate.toISOString().slice(0, 10)
 
+  // Track employees who hit Försäkringskassan day-15 transition or läkarintyg
+  // dag 8 — surfaced as warnings in the response so the UI can flag them.
+  const lakarintygEmployees: string[] = []
+  const fkReportingEmployees: string[] = []
+
   for (const sre of runEmployees) {
     const emp = sre.employee
     if (!emp) continue
@@ -160,6 +165,10 @@ export const POST = withRouteContext(
       periodStart,
       periodEnd,
     })
+
+    const employeeName = `${emp.first_name} ${emp.last_name}`
+    if (absenceResult.flagLakarintyg) lakarintygEmployees.push(employeeName)
+    if (absenceResult.flagFkReporting) fkReportingEmployees.push(employeeName)
 
     const { error: delAbsErr } = await supabase
       .from('salary_line_items')
@@ -338,6 +347,23 @@ export const POST = withRouteContext(
   } else if (taxTableSource === 'mixed') {
     warnings.push(
       `Skatteverkets skattetabell-API svarade bara delvis — vissa skattetabeller kommer från lokal reservdata för ${paymentYear}. Kontrollera att Skatteverket inte publicerat ändringar innan lönekörningen bokförs.`
+    )
+  }
+
+  if (lakarintygEmployees.length > 0) {
+    // Per Sjuklönelagen 8§: from day 8 of a sjuklöneperiod the employer can
+    // require a läkarintyg. Day 1–7 use sjukförsäkran (employee declaration).
+    warnings.push(
+      `Läkarintyg krävs från och med dag 8: ${lakarintygEmployees.join(', ')}. ` +
+      `Kontrollera att läkarintyg finns innan lönekörningen godkänns.`
+    )
+  }
+
+  if (fkReportingEmployees.length > 0) {
+    // Day 15+ falls on Försäkringskassan; the employer reports via FK.
+    warnings.push(
+      `Försäkringskassan tar över sjuklön från dag 15: ${fkReportingEmployees.join(', ')}. ` +
+      `Säkerställ att anmälan till FK är gjord.`
     )
   }
 

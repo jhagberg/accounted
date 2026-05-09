@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import { TimeoutError } from '@/lib/http/fetch-with-timeout'
 import { buildAuthorizeUrl, exchangeCodeForTokens } from './lib/oauth'
 import { storeTokens, getTokens, deleteTokens } from './lib/token-store'
-import { skvRequest, SkatteverketAuthError } from './lib/api-client'
+import { skvRequest, SkatteverketAuthError, getSkatteverketEnvironment } from './lib/api-client'
 import { rutorToMomsuppgift, formatRedovisare, formatRedovisningsperiod } from './lib/mappers'
 import { calculateVatDeclaration } from '@/lib/reports/vat-declaration'
 import {
@@ -26,20 +26,53 @@ import type { VatPeriodType } from '@/types'
 /**
  * Skatteverket integration extension.
  *
- * Enables filing momsdeklaration (VAT declaration) directly to Skatteverket
- * via their Momsdeklaration API 1.0. Users authenticate with BankID through
- * the `per` (e-legitimation) OAuth2 flow.
+ * Enables filing momsdeklaration (VAT declaration) and arbetsgivardeklaration
+ * (AGI), plus Skattekonto saldo sync. Users authenticate with BankID via the
+ * `per` (e-legitimation) OAuth2 flow.
  *
  * Required environment variables:
  * - SKATTEVERKET_OAUTH2_CLIENT_ID
  * - SKATTEVERKET_OAUTH2_CLIENT_SECRET
  * - SKATTEVERKET_APIGW_CLIENT_ID
  * - SKATTEVERKET_APIGW_CLIENT_SECRET
- * - SKATTEVERKET_TOKEN_ENCRYPTION_KEY
+ * - SKATTEVERKET_TOKEN_ENCRYPTION_KEY (openssl rand -base64 32; never reuse
+ *   the test-env key in prod)
  *
  * Optional:
- * - SKATTEVERKET_OAUTH_BASE_URL (defaults to test environment)
- * - SKATTEVERKET_API_BASE_URL (defaults to test environment)
+ * - SKATTEVERKET_OAUTH_BASE_URL                 — defaults to test
+ * - SKATTEVERKET_API_BASE_URL                   — momsdeklaration; defaults to test
+ * - SKATTEVERKET_AGD_INLAMNING_API_BASE_URL     — AGI inlämning; defaults to test
+ * - SKATTEVERKET_AGD_PERIOD_API_BASE_URL        — AGI period mgmt; defaults to test
+ * - SKATTEVERKET_SKATTEKONTO_API_BASE_URL       — Skattekonto; defaults to test
+ * - SKATTEVERKET_DISABLED=true                  — emergency kill switch
+ *
+ * ─── Production cutover checklist ─────────────────────────────────────────
+ * Before flipping the env URLs to prod, the following has to land first
+ * (most are external blockers):
+ *
+ *   1. Register a prod OAuth2 client in Skatteverket's developer portal
+ *      (separate from the test client). Requires a signed integrationsavtal.
+ *   2. Order APIGW prod credentials (separate ärende).
+ *   3. Register the prod redirect URI:
+ *      `${NEXT_PUBLIC_APP_URL}/api/extensions/ext/skatteverket/callback`.
+ *   4. Request scopes: agd:skicka, agd:lasa, skattekonto:lasa, moms:skicka.
+ *   5. Pass Skatteverket's godkännandetest (they validate a few real AGI
+ *      submissions in their test tenant before granting prod access).
+ *   6. Generate a fresh SKATTEVERKET_TOKEN_ENCRYPTION_KEY (rotate from test).
+ *   7. Set the prod base URLs:
+ *        SKATTEVERKET_API_BASE_URL=https://api.skatteverket.se/momsdeklaration/v1
+ *        SKATTEVERKET_AGD_INLAMNING_API_BASE_URL=https://api.skatteverket.se/arbetsgivardeklaration/inlamning/v1
+ *        SKATTEVERKET_AGD_PERIOD_API_BASE_URL=https://api.skatteverket.se/arbetsgivardeklaration/hanteraredovisningsperiod/v1
+ *        SKATTEVERKET_SKATTEKONTO_API_BASE_URL=https://api.skatteverket.se/beskattning/skattekonto/v2
+ *        SKATTEVERKET_OAUTH_BASE_URL=https://oauth2.skatteverket.se/oauth2
+ *   8. Verify Sentry alerts on /api/extensions/ext/skatteverket/* 5xx.
+ *   9. Verify 7-year retention of `agi_declarations.xml_content` +
+ *      `kvittensnummer` (BFL 7 kap.).
+ *  10. Run a single AGI end-to-end against test on a real client before
+ *      switching that client over.
+ *
+ * The /status endpoint reports which environment is active so the UI can
+ * surface a Testmiljö / Produktion badge.
  */
 export const skatteverketExtension: Extension = {
   id: 'skatteverket',
@@ -227,8 +260,11 @@ export const skatteverketExtension: Extension = {
         }
 
         const tokens = await getTokens(ctx.supabase, ctx.userId)
+        const environment = getSkatteverketEnvironment()
+        const disabled = (process.env.SKATTEVERKET_DISABLED ?? '').toLowerCase() === 'true'
+
         if (!tokens) {
-          return NextResponse.json({ connected: false })
+          return NextResponse.json({ connected: false, environment, disabled })
         }
 
         const expired = tokens.expires_at < Date.now()
@@ -240,6 +276,8 @@ export const skatteverketExtension: Extension = {
           canRefresh,
           scope: tokens.scope,
           expiresAt: new Date(tokens.expires_at).toISOString(),
+          environment,
+          disabled,
         })
       },
     },

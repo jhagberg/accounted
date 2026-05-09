@@ -5,16 +5,20 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/use-toast'
-import { CheckCircle2, ExternalLink, ShieldOff } from 'lucide-react'
+import { CheckCircle2, ExternalLink, ShieldOff, FlaskConical, ShieldAlert } from 'lucide-react'
+
+type Environment = 'test' | 'prod'
 
 type Status =
-  | { connected: false }
+  | { connected: false; environment?: Environment; disabled?: boolean }
   | {
       connected: true
       expired: boolean
       canRefresh: boolean
       scope: string
       expiresAt: string
+      environment?: Environment
+      disabled?: boolean
     }
 
 const SCOPE_LABELS: Record<string, string> = {
@@ -92,14 +96,23 @@ export function SkatteverketConnectPanel() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Skatteverket</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Skatteverket</CardTitle>
+            <EnvironmentBadge environment={status?.environment} disabled={status?.disabled} />
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {status?.disabled && (
+            <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+              <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" />
+              <p>Skatteverket-integrationen är tillfälligt avstängd. Kontakta support.</p>
+            </div>
+          )}
           <p className="text-sm text-muted-foreground">
             Anslut till Skatteverket med BankID för att skicka momsdeklaration,
             arbetsgivardeklaration och hämta saldot på skattekontot.
           </p>
-          <Button onClick={startConnect}>
+          <Button onClick={startConnect} disabled={status?.disabled}>
             <ExternalLink className="mr-2 h-4 w-4" />
             Anslut med BankID
           </Button>
@@ -129,6 +142,7 @@ export function SkatteverketConnectPanel() {
               </Badge>
             )}
           </CardTitle>
+          <EnvironmentBadge environment={status.environment} disabled={status.disabled} />
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -178,9 +192,16 @@ export function SkatteverketConnectPanel() {
           )}
         </div>
 
+        {status.disabled && (
+          <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+            <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" />
+            <p>Skatteverket-integrationen är tillfälligt avstängd. Inlämningar är inaktiverade.</p>
+          </div>
+        )}
+
         <div className="flex gap-2 pt-2">
           {(status.expired || !status.canRefresh || !scopes.includes('skattekonto') || !scopes.includes('agd')) && (
-            <Button onClick={startConnect}>
+            <Button onClick={startConnect} disabled={status.disabled}>
               <ExternalLink className="mr-2 h-4 w-4" />
               Anslut igen
             </Button>
@@ -197,4 +218,31 @@ export function SkatteverketConnectPanel() {
       </CardContent>
     </Card>
   )
+}
+
+function EnvironmentBadge({ environment, disabled }: { environment?: Environment; disabled?: boolean }) {
+  if (disabled) {
+    return (
+      <Badge variant="destructive">
+        <ShieldAlert className="mr-1 h-3 w-3" />
+        Avstängd
+      </Badge>
+    )
+  }
+  if (environment === 'test') {
+    return (
+      <Badge variant="outline" className="border-amber-400 text-amber-700 dark:border-amber-600 dark:text-amber-400">
+        <FlaskConical className="mr-1 h-3 w-3" />
+        Testmiljö
+      </Badge>
+    )
+  }
+  if (environment === 'prod') {
+    return (
+      <Badge variant="outline" className="border-emerald-400 text-emerald-700 dark:border-emerald-600 dark:text-emerald-400">
+        Produktion
+      </Badge>
+    )
+  }
+  return null
 }

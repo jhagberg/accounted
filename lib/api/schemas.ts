@@ -396,6 +396,8 @@ export const UpdateSettingsSchema = z.object({
   invoice_credit_terms_text: z.string().nullable().optional(),
   // AI agent flow
   ai_flow_enabled: z.boolean().optional(),
+  // Salary payment file
+  preferred_payment_format: z.enum(['bg_lb', 'pain001']).optional(),
 }).refine(
   (data) => {
     // BFL 3 kap.: Enskild firma must have fiscal year starting January

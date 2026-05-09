@@ -2555,6 +2555,8 @@ export interface SalaryRun {
   vacation_entry_id: string | null
   agi_generated_at: string | null
   agi_submitted_at: string | null
+  payment_file_format: 'bg_lb' | 'pain001' | null
+  payment_file_generated_at: string | null
   calculation_params: Record<string, unknown> | null
   approved_by: string | null
   approved_at: string | null
