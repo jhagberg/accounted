@@ -20,6 +20,7 @@ export type {
   BalanceResponse,
   Transaction as EnableBankingTransaction,
   TransactionsResponse,
+  TransactionsFetchStrategy,
   Bank,
   BankTransaction,
 } from './lib/api-client'

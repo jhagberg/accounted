@@ -3,7 +3,7 @@ import { getAllTransactionsWithRaw, convertTransaction, getAccountBalance } from
 import { uploadDocument } from '@/lib/core/documents/document-service'
 import { ingestTransactions as defaultIngest } from '@/lib/transactions/ingest'
 import type { RawTransaction, IngestResult, IngestOptions } from '@/types'
-import type { StoredAccount } from '../types'
+import type { StoredAccount, TransactionsFetchStrategy } from '../types'
 
 /** Ingest function signature — matches lib/transactions/ingest */
 export type IngestFn = (
@@ -19,6 +19,11 @@ export interface SyncOptions {
   skipAutoCategorization?: boolean
   /** Only INSERT + dedup, no matching/categorization (viewer imports) */
   rawInsertOnly?: boolean
+  /**
+   * Fetch strategy passed to Enable Banking. 'longest' instructs the upstream
+   * to fetch the deepest available history (slower); omit for incremental syncs.
+   */
+  strategy?: TransactionsFetchStrategy
 }
 
 export interface SyncResult {
@@ -55,19 +60,37 @@ export async function syncAccountTransactions(
     accountIban: account.iban,
     fromDate,
     toDate,
+    strategy: syncOptions?.strategy,
   })
 
   const { transactions, rawPages } = await getAllTransactionsWithRaw(
     account.uid,
     fromDate,
     toDate,
+    syncOptions?.strategy,
   )
+
+  // Log the actual date range returned so we can compare against the requested
+  // window. Helps diagnose when an ASPSP truncates history below what we asked for.
+  let minBookingDate: string | undefined
+  let maxBookingDate: string | undefined
+  for (const tx of transactions) {
+    const d = tx.booking_date || tx.value_date
+    if (!d) continue
+    if (!minBookingDate || d < minBookingDate) minBookingDate = d
+    if (!maxBookingDate || d > maxBookingDate) maxBookingDate = d
+  }
 
   console.log('[enable-banking] Fetched transactions from API', {
     connectionId,
     accountUid: account.uid,
     transactionCount: transactions.length,
     rawPageCount: rawPages.length,
+    requestedFromDate: fromDate,
+    requestedToDate: toDate,
+    returnedMinBookingDate: minBookingDate,
+    returnedMaxBookingDate: maxBookingDate,
+    strategy: syncOptions?.strategy,
   })
 
   const bankTransactions = transactions.map(tx => convertTransaction(tx, account.currency))

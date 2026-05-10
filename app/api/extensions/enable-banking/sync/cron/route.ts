@@ -156,9 +156,13 @@ export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
         .limit(1)
         .maybeSingle()
 
-      const syncOptions = sieOverlap
-        ? { skipAutoCategorization: true }
-        : undefined
+      // First sync uses strategy=longest to pull the deepest history available
+      // from the ASPSP. Incremental syncs skip it — the implicit default is
+      // faster and we already have the older data.
+      const syncOptions = {
+        ...(sieOverlap ? { skipAutoCategorization: true } : {}),
+        ...(isFirstSync ? { strategy: 'longest' as const } : {}),
+      }
 
       const syncResults = await Promise.all(
         accounts.map(account => syncAccountTransactions(

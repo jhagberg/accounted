@@ -3,6 +3,7 @@
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { formatCurrency } from '@/lib/utils'
+import { getDisplayTotal } from '@/lib/invoices/rounding'
 import type { Customer, Currency } from '@/types'
 
 interface ReviewItem {
@@ -28,6 +29,8 @@ interface InvoiceReviewContentProps {
   /** The invoice number that will be assigned on confirm. Null when unknown
    *  (e.g. delivery notes use a different sequence) or unfetched. */
   numberPreview?: string | null
+  /** Mirrors `company_settings.ore_rounding`. Defaults to true to match `getDisplayTotal`. */
+  oreRounding?: boolean
 }
 
 export function InvoiceReviewContent({
@@ -43,7 +46,9 @@ export function InvoiceReviewContent({
   ourReference,
   notes,
   numberPreview,
+  oreRounding,
 }: InvoiceReviewContentProps) {
+  const rounding = getDisplayTotal({ total, currency }, { ore_rounding: oreRounding ?? true })
   const customerTypeLabel: Record<string, string> = {
     individual: 'Privatperson',
     swedish_business: 'Svenskt företag eller organisation',
@@ -160,10 +165,16 @@ export function InvoiceReviewContent({
             <span>{formatCurrency(0, currency)}</span>
           </div>
         )}
+        {rounding.applies && (
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Öresavrundning</span>
+            <span>{formatCurrency(rounding.roundingDelta, currency)}</span>
+          </div>
+        )}
         <Separator />
         <div className="flex justify-between font-bold text-xl sm:text-2xl">
           <span>Totalt</span>
-          <span>{formatCurrency(total, currency)}</span>
+          <span>{formatCurrency(rounding.displayed, currency)}</span>
         </div>
       </div>
 

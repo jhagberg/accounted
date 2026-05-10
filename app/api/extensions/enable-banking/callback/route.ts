@@ -149,6 +149,10 @@ export async function GET(request: Request) {
       })
     )
 
+    // Do not set last_synced_at here. The session is created but no transactions
+    // have been fetched yet; setting it now causes the cron's first-sync 90-day
+    // backfill path to be skipped if the manual sync triggered by the redirect
+    // never lands. The first successful sync (manual or cron) will set it.
     const { error: updateError } = await supabase
       .from('bank_connections')
       .update({
@@ -156,7 +160,6 @@ export async function GET(request: Request) {
         status: 'active',
         accounts_data: accountsWithBalances,
         consent_expires: consentExpiresAt,
-        last_synced_at: new Date().toISOString(),
         oauth_state: null, // Clear to prevent replay
       })
       .eq('id', pendingConnection.id)

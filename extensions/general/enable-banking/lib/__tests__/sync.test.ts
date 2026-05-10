@@ -129,6 +129,59 @@ describe('syncAccountTransactions', () => {
     errorSpy.mockRestore()
   })
 
+  it('forwards strategy from sync options to getAllTransactionsWithRaw', async () => {
+    mockGetAllTransactionsWithRaw.mockResolvedValue({
+      transactions: [],
+      rawPages: ['{}'],
+    })
+    mockUploadDocument.mockResolvedValue({ id: 'doc-1' })
+
+    await syncAccountTransactions(
+      {} as never,
+      COMPANY_ID,
+      USER_ID,
+      CONNECTION_ID,
+      makeAccount(),
+      '2024-01-01',
+      '2024-12-31',
+      mockIngest,
+      { strategy: 'longest' }
+    )
+
+    expect(mockGetAllTransactionsWithRaw).toHaveBeenCalledWith(
+      'acc-uid-1',
+      '2024-01-01',
+      '2024-12-31',
+      'longest'
+    )
+  })
+
+  it('omits strategy when sync options do not include it', async () => {
+    mockGetAllTransactionsWithRaw.mockResolvedValue({
+      transactions: [],
+      rawPages: ['{}'],
+    })
+    mockUploadDocument.mockResolvedValue({ id: 'doc-1' })
+
+    await syncAccountTransactions(
+      {} as never,
+      COMPANY_ID,
+      USER_ID,
+      CONNECTION_ID,
+      makeAccount(),
+      '2024-01-01',
+      '2024-12-31',
+      mockIngest
+    )
+
+    expect(mockGetAllTransactionsWithRaw).toHaveBeenCalledWith(
+      'acc-uid-1',
+      '2024-01-01',
+      '2024-12-31',
+      undefined
+    )
+  })
+
   it('passes raw transactions to ingest function', async () => {
     mockGetAllTransactionsWithRaw.mockResolvedValue({
       transactions: [{ transaction_amount: { amount: '500', currency: 'SEK' } }],

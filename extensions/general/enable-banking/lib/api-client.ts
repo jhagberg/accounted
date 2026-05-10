@@ -120,6 +120,15 @@ export interface TransactionsResponse {
   continuation_key?: string
 }
 
+/**
+ * Strategy for how Enable Banking fetches transactions from the upstream ASPSP.
+ * - 'default' — fast path, may return only the most recent window even if date_from is older
+ * - 'longest' — fetch the longest available history (up to PSD2 90-day max), slower
+ *
+ * When omitted, Enable Banking applies its default strategy.
+ */
+export type TransactionsFetchStrategy = 'default' | 'longest'
+
 // Legacy types for backward compatibility
 export interface Bank {
   id: string
@@ -462,12 +471,14 @@ export async function getAccountTransactions(
   accountUid: string,
   dateFrom?: string,
   dateTo?: string,
-  continuationKey?: string
+  continuationKey?: string,
+  strategy?: TransactionsFetchStrategy
 ): Promise<TransactionsResponse> {
   const params = new URLSearchParams()
   if (dateFrom) params.set('date_from', dateFrom)
   if (dateTo) params.set('date_to', dateTo)
   if (continuationKey) params.set('continuation_key', continuationKey)
+  if (strategy) params.set('strategy', strategy)
   params.set('limit', String(DEFAULT_PAGE_SIZE))
 
   const queryString = params.toString()
@@ -484,6 +495,7 @@ export async function getAccountTransactions(
       accountUid,
       dateFrom,
       dateTo,
+      strategy,
       hasContinuationKey: !!continuationKey,
     })
     throw new Error(`Failed to get transactions (${response.status}): ${body}`)
@@ -498,7 +510,8 @@ export async function getAccountTransactions(
 export async function getAllTransactions(
   accountUid: string,
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  strategy?: TransactionsFetchStrategy
 ): Promise<Transaction[]> {
   const allTransactions: Transaction[] = []
   let continuationKey: string | undefined
@@ -509,7 +522,8 @@ export async function getAllTransactions(
       accountUid,
       dateFrom,
       dateTo,
-      continuationKey
+      continuationKey,
+      strategy
     )
 
     allTransactions.push(...response.transactions)
@@ -528,22 +542,29 @@ export async function getAllTransactions(
 /**
  * Get all transactions with raw JSON responses for archival.
  * Returns both parsed transactions and the raw response strings.
+ *
+ * If `strategy` is provided and the API rejects it with a 400 on the first
+ * request, retry once without `strategy` so unknown enum values can't break
+ * the sync. Logs a warning when the fallback fires.
  */
 export async function getAllTransactionsWithRaw(
   accountUid: string,
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  strategy?: TransactionsFetchStrategy
 ): Promise<{ transactions: Transaction[]; rawPages: string[] }> {
   const allTransactions: Transaction[] = []
   const rawPages: string[] = []
   let continuationKey: string | undefined
   let page = 0
+  let activeStrategy = strategy
 
-  do {
+  while (true) {
     const params = new URLSearchParams()
     if (dateFrom) params.set('date_from', dateFrom)
     if (dateTo) params.set('date_to', dateTo)
     if (continuationKey) params.set('continuation_key', continuationKey)
+    if (activeStrategy) params.set('strategy', activeStrategy)
     params.set('limit', String(DEFAULT_PAGE_SIZE))
 
     const queryString = params.toString()
@@ -553,6 +574,17 @@ export async function getAllTransactionsWithRaw(
 
     if (!response.ok) {
       const body = await response.text()
+      // If the API rejects an unknown strategy on the very first request,
+      // fall back to the implicit default and retry the same page.
+      if (response.status === 400 && activeStrategy && page === 0 && !continuationKey) {
+        console.warn('[enable-banking] strategy rejected by API, retrying without strategy', {
+          accountUid,
+          strategy: activeStrategy,
+          body,
+        })
+        activeStrategy = undefined
+        continue
+      }
       console.error('[enable-banking] getAllTransactionsWithRaw failed', {
         status: response.status,
         statusText: response.statusText,
@@ -560,6 +592,7 @@ export async function getAllTransactionsWithRaw(
         accountUid,
         dateFrom,
         dateTo,
+        strategy: activeStrategy,
         page,
         hasContinuationKey: !!continuationKey,
       })
@@ -578,7 +611,8 @@ export async function getAllTransactionsWithRaw(
       console.warn(`[enable-banking] Pagination cap reached (${MAX_PAGINATION_PAGES} pages) for account ${accountUid}`)
       break
     }
-  } while (continuationKey)
+    if (!continuationKey) break
+  }
 
   return { transactions: allTransactions, rawPages }
 }

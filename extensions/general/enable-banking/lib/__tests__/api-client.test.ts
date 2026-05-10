@@ -155,6 +155,69 @@ describe('api-client', () => {
       expect(JSON.parse(result.rawPages[0])).toEqual(page1)
       expect(JSON.parse(result.rawPages[1])).toEqual(page2)
     })
+
+    it('appends strategy=longest to the request URL when supplied', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ transactions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      await getAllTransactionsWithRaw('acc-1', '2024-01-01', '2024-12-31', 'longest')
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const requestedUrl = fetchSpy.mock.calls[0][0] as string
+      expect(requestedUrl).toContain('strategy=longest')
+      expect(requestedUrl).toContain('date_from=2024-01-01')
+      expect(requestedUrl).toContain('date_to=2024-12-31')
+    })
+
+    it('omits the strategy param when not supplied', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ transactions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+
+      await getAllTransactionsWithRaw('acc-1', '2024-01-01', '2024-12-31')
+
+      const requestedUrl = fetchSpy.mock.calls[0][0] as string
+      expect(requestedUrl).not.toContain('strategy=')
+    })
+
+    it('falls back to no-strategy on 400 and retries the same page', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      fetchSpy
+        .mockResolvedValueOnce(
+          new Response('Invalid strategy', { status: 400 })
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ transactions: [{ transaction_amount: { amount: '50', currency: 'SEK' } }] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        )
+
+      const result = await getAllTransactionsWithRaw('acc-1', '2024-01-01', '2024-12-31', 'longest')
+
+      expect(result.transactions).toHaveLength(1)
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+      const firstUrl = fetchSpy.mock.calls[0][0] as string
+      const secondUrl = fetchSpy.mock.calls[1][0] as string
+      expect(firstUrl).toContain('strategy=longest')
+      expect(secondUrl).not.toContain('strategy=')
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[enable-banking] strategy rejected by API, retrying without strategy',
+        expect.objectContaining({ strategy: 'longest' })
+      )
+
+      warnSpy.mockRestore()
+    })
   })
 })
 

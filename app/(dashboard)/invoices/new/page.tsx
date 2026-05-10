@@ -79,6 +79,7 @@ export default function NewInvoicePage() {
   const [hasBankDetails, setHasBankDetails] = useState<boolean | null>(null)
   const [showBankSetup, setShowBankSetup] = useState(false)
   const [accountingMethod, setAccountingMethod] = useState<'accrual' | 'cash'>('accrual')
+  const [oreRounding, setOreRounding] = useState<boolean>(true)
   const [numberPreview, setNumberPreview] = useState<string | null>(null)
   const pendingCustomerRef = useRef<Customer | null>(null)
 
@@ -139,7 +140,7 @@ export default function NewInvoicePage() {
     if (!company?.id) return
     const { data } = await supabase
       .from('company_settings')
-      .select('invoice_default_notes, clearing_number, account_number, bankgiro, accounting_method')
+      .select('invoice_default_notes, clearing_number, account_number, bankgiro, accounting_method, ore_rounding')
       .eq('company_id', company.id)
       .single()
     if (data?.invoice_default_notes) {
@@ -151,6 +152,9 @@ export default function NewInvoicePage() {
     )
     if (data?.accounting_method === 'cash' || data?.accounting_method === 'accrual') {
       setAccountingMethod(data.accounting_method)
+    }
+    if (typeof data?.ore_rounding === 'boolean') {
+      setOreRounding(data.ore_rounding)
     }
   }
 
@@ -896,6 +900,7 @@ export default function NewInvoicePage() {
             ourReference={pendingData?.our_reference}
             notes={pendingData?.notes}
             numberPreview={numberPreview}
+            oreRounding={oreRounding}
           />
         </ConfirmationDialog>
       )}

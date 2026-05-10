@@ -547,16 +547,16 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
               const rounding = getDisplayTotal(invoice, company)
               return (
                 <>
-                  <View style={styles.grandTotal}>
-                    <Text style={styles.grandTotalLabel}>{isCreditNote ? 'Att kreditera:' : 'Att betala:'}</Text>
-                    <Text style={styles.grandTotalValue}>{formatCurrency(rounding.displayed, invoice.currency)}</Text>
-                  </View>
                   {rounding.applies && (
                     <View style={styles.totalRow}>
                       <Text style={[styles.totalLabel, { fontSize: 8 }]}>Öresavrundning:</Text>
                       <Text style={[styles.totalValue, { fontSize: 8 }]}>{formatCurrency(rounding.roundingDelta, 'SEK')}</Text>
                     </View>
                   )}
+                  <View style={styles.grandTotal}>
+                    <Text style={styles.grandTotalLabel}>{isCreditNote ? 'Att kreditera:' : 'Att betala:'}</Text>
+                    <Text style={styles.grandTotalValue}>{formatCurrency(rounding.displayed, invoice.currency)}</Text>
+                  </View>
                 </>
               )
             })()}

@@ -282,9 +282,13 @@ export const enableBankingExtension: Extension = {
             .maybeSingle()
           const isViewer = membership?.role === 'viewer'
 
+          // Use strategy=longest when the caller asks for >= 30 days of history
+          // (initial sync, manual backfill). Short windows get the implicit
+          // default since there's no older data to surface.
           const syncOptions = {
             ...(sieOverlap ? { skipAutoCategorization: true } : {}),
             ...(isViewer ? { rawInsertOnly: true } : {}),
+            ...(days_back >= 30 ? { strategy: 'longest' as const } : {}),
           }
 
           if (sieOverlap) {
