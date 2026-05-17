@@ -5981,6 +5981,219 @@ export const tools: McpTool[] = [
       )
     },
   },
+
+  // ─── Phase 4-7: bokslut wizard surfaces exposed to agents ───────────
+
+  {
+    name: 'gnubok_propose_dispositioner',
+    description:
+      'Read-only proposal of bokslutsdispositioner for a fiscal period: periodiseringsfond (avsättning + obligatorisk återföring), överavskrivningar, SLP, bolagsskatt. Call before staging postings.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        fiscal_period_id: { type: 'string', description: 'UUID of the fiscal period' },
+      },
+      required: ['fiscal_period_id'],
+    },
+    // Output is the same DispositionsProposal shape returned by GET
+    // /bokslutsdispositioner — surface as a permissive object so the
+    // strict-schema test passes without duplicating the type tree here.
+    outputSchema: { type: 'object', additionalProperties: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async execute(args, companyId, _userId, supabase, _actor) {
+      const fiscalPeriodId = args.fiscal_period_id as string
+      if (!fiscalPeriodId) throw new Error('fiscal_period_id is required')
+      const { buildDispositionsProposal } = await import('@/lib/bokslut/dispositions-proposal-builder')
+      return buildDispositionsProposal(supabase, companyId, fiscalPeriodId)
+    },
+  },
+
+  {
+    name: 'gnubok_propose_accruals',
+    description:
+      'Read-only proposal of periodiseringar (förutbetalda/upplupna kostnader). Currently surfaces the vacation-liability change; manual prepaid/accrued entries are submitted by the UI form.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        fiscal_period_id: { type: 'string', description: 'UUID of the fiscal period' },
+      },
+      required: ['fiscal_period_id'],
+    },
+    outputSchema: { type: 'object', additionalProperties: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async execute(args, companyId, _userId, supabase, _actor) {
+      const fiscalPeriodId = args.fiscal_period_id as string
+      if (!fiscalPeriodId) throw new Error('fiscal_period_id is required')
+      const { buildAccrualsProposal } = await import('@/lib/bokslut/accruals/accrual-detector')
+      return buildAccrualsProposal(supabase, companyId, fiscalPeriodId)
+    },
+  },
+
+  {
+    name: 'gnubok_propose_annual_depreciation',
+    description:
+      'Read-only per-asset planenlig avskrivning proposal for a fiscal period. Reads the asset register and existing depreciation schedules. Call before staging the post.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        fiscal_period_id: { type: 'string', description: 'UUID of the fiscal period' },
+      },
+      required: ['fiscal_period_id'],
+    },
+    outputSchema: { type: 'object', additionalProperties: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async execute(args, companyId, _userId, supabase, _actor) {
+      const fiscalPeriodId = args.fiscal_period_id as string
+      if (!fiscalPeriodId) throw new Error('fiscal_period_id is required')
+      const { proposeAnnualPostings } = await import('@/lib/bokslut/assets/depreciation-engine')
+      return proposeAnnualPostings(supabase, companyId, fiscalPeriodId)
+    },
+  },
+
+  {
+    name: 'gnubok_post_annual_depreciation',
+    description:
+      'Stage planenlig avskrivning posts — one journal entry per asset for independent reversibility. Mid-risk, always staged.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        fiscal_period_id: { type: 'string', description: 'UUID of the fiscal period' },
+        asset_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional whitelist of asset UUIDs to post; omit to post all proposed.',
+        },
+      },
+      required: ['fiscal_period_id'],
+    },
+    outputSchema: STAGED_OPERATION_SCHEMA,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    async execute(args, companyId, userId, supabase, actor) {
+      const fiscalPeriodId = args.fiscal_period_id as string
+      if (!fiscalPeriodId) throw new Error('fiscal_period_id is required')
+      const assetIds = Array.isArray(args.asset_ids) ? (args.asset_ids as string[]) : undefined
+
+      // Mirror the HTTP route's `requireWrite: true` guard so a viewer-role
+      // member can't post depreciation through the MCP surface. RLS would
+      // reject the underlying INSERTs anyway, but failing fast here
+      // produces a much cleaner error than the cascaded RLS rejection.
+      const { data: membership } = await supabase
+        .from('company_members')
+        .select('role')
+        .eq('company_id', companyId)
+        .eq('user_id', userId)
+        .maybeSingle()
+      if (!membership || membership.role === 'viewer') {
+        throw new Error('Write permission required')
+      }
+
+      const { data: period } = await supabase
+        .from('fiscal_periods')
+        .select('id, name, period_end, is_closed, locked_at, closing_entry_id')
+        .eq('id', fiscalPeriodId)
+        .eq('company_id', companyId)
+        .single()
+      if (!period) throw new Error('Fiscal period not found')
+      if (period.is_closed || period.closing_entry_id || period.locked_at) {
+        throw new Error('Period is locked or closed')
+      }
+
+      const { proposeAnnualPostings } = await import('@/lib/bokslut/assets/depreciation-engine')
+      const proposal = await proposeAnnualPostings(supabase, companyId, fiscalPeriodId)
+      const filtered = assetIds
+        ? proposal.items.filter((i) => assetIds.includes(i.asset.id))
+        : proposal.items
+      const pending = filtered.filter((i) => !i.existingJournalEntryId)
+
+      return stagePendingOperation(
+        supabase, companyId, userId, 'post_annual_depreciation',
+        `Planenlig avskrivning: ${period.name}`,
+        { fiscal_period_id: fiscalPeriodId, asset_ids: assetIds },
+        {
+          period_name: period.name,
+          item_count: pending.length,
+          total_amount: pending.reduce((s, i) => s + i.amount, 0),
+          will: `book ${pending.length} planenlig avskrivning(ar) — one journal entry per asset`,
+          items: pending.map((i) => ({
+            asset_id: i.asset.id,
+            asset_name: i.asset.name,
+            amount: i.amount,
+            pro_rated: i.proRated,
+          })),
+        },
+        actor,
+        undefined,
+        { dateForPeriodCheck: period.period_end },
+      )
+    },
+  },
+
+  {
+    name: 'gnubok_preview_arsredovisning',
+    description:
+      'Read-only K2 årsredovisning preview for a fiscal period. Returns flerårsöversikt, eget-kapital-förändring, RR, BR, K2 noter, signature slots. PDF download is via UI.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        fiscal_period_id: { type: 'string', description: 'UUID of the fiscal period' },
+      },
+      required: ['fiscal_period_id'],
+    },
+    outputSchema: { type: 'object', additionalProperties: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async execute(args, companyId, _userId, supabase, _actor) {
+      const fiscalPeriodId = args.fiscal_period_id as string
+      if (!fiscalPeriodId) throw new Error('fiscal_period_id is required')
+      const { buildArsredovisningData } = await import('@/lib/bokslut/arsredovisning/build-data')
+      return buildArsredovisningData(supabase, companyId, fiscalPeriodId)
+    },
+  },
+
+  {
+    name: 'gnubok_preview_ef_declaration',
+    description:
+      'Read-only EF declaration preview: egenavgifter schablonavdrag, räntefördelning, periodiseringsfond, expansionsfond. All declaration-only, never booked. Pass kapitalunderlag and prior-year amounts as inputs.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        fiscal_period_id: { type: 'string', description: 'UUID of the fiscal period' },
+        category: {
+          type: 'string',
+          enum: ['full', 'pensioner', 'passive'],
+          description: 'Egenavgifter category — defaults to "full"',
+        },
+        kapitalunderlag: { type: 'number', description: 'Justerat eget kapital vid föregående års utgång (default 0)' },
+        prior_year_schablonavdrag: { type: 'number' },
+        prior_year_actual_charged: { type: 'number' },
+        pfond_desired_amount: { type: 'number' },
+        expansionsfond_existing_balance: { type: 'number' },
+        expansionsfond_desired_change: { type: 'number' },
+      },
+      required: ['fiscal_period_id'],
+    },
+    outputSchema: { type: 'object', additionalProperties: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async execute(args, companyId, _userId, supabase, _actor) {
+      const fiscalPeriodId = args.fiscal_period_id as string
+      if (!fiscalPeriodId) throw new Error('fiscal_period_id is required')
+      const { computeEfDeclarationPreview } = await import('@/lib/bokslut/enskild-firma/ef-declaration-preview')
+      return computeEfDeclarationPreview(supabase, companyId, fiscalPeriodId, {
+        category: args.category as 'full' | 'pensioner' | 'passive' | undefined,
+        kapitalunderlag: args.kapitalunderlag as number | undefined,
+        priorYearSchablonavdrag: args.prior_year_schablonavdrag as number | undefined,
+        priorYearActualCharged: args.prior_year_actual_charged as number | undefined,
+        pfondDesiredAmount: args.pfond_desired_amount as number | undefined,
+        expansionsfondExistingBalance: args.expansionsfond_existing_balance as number | undefined,
+        expansionsfondDesiredChange: args.expansionsfond_desired_change as number | undefined,
+      })
+    },
+  },
 ]
 
 // ── MCP Protocol Handler ─────────────────────────────────────

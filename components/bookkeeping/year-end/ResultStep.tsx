@@ -55,8 +55,15 @@ export function ResultStep({ result }: ResultStepProps) {
         <Button variant="outline" asChild>
           <Link href="/bookkeeping">Till bokföringen</Link>
         </Button>
-        <Button asChild>
+        <Button variant="outline" asChild>
           <Link href="/reports">Generera rapporter</Link>
+        </Button>
+        <Button asChild>
+          <Link
+            href={`/bookkeeping/year-end/arsredovisning?period=${result.closingEntry.fiscal_period_id}`}
+          >
+            Skapa årsredovisning
+          </Link>
         </Button>
       </div>
     </div>

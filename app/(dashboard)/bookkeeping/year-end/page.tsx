@@ -23,15 +23,17 @@ import type { FiscalPeriod, YearEndPreview, YearEndResult } from '@/types'
 import type { BokslutReadinessReport } from '@/lib/bokslut/readiness-aggregator'
 import { PreflightStep } from '@/components/bookkeeping/year-end/PreflightStep'
 import { DispositionsStep } from '@/components/bookkeeping/year-end/DispositionsStep'
+import { AccrualsStep } from '@/components/bookkeeping/year-end/AccrualsStep'
 import { PreviewStep } from '@/components/bookkeeping/year-end/PreviewStep'
 import { ExecuteStep } from '@/components/bookkeeping/year-end/ExecuteStep'
 import { ResultStep } from '@/components/bookkeeping/year-end/ResultStep'
 
-type Step = 'preflight' | 'dispositions' | 'preview' | 'execute' | 'result'
+type Step = 'preflight' | 'accruals' | 'dispositions' | 'preview' | 'execute' | 'result'
 
-const STEP_ORDER: Step[] = ['preflight', 'dispositions', 'preview', 'execute', 'result']
+const STEP_ORDER: Step[] = ['preflight', 'accruals', 'dispositions', 'preview', 'execute', 'result']
 const STEP_LABELS: Record<Step, string> = {
   preflight: 'Kontroll',
+  accruals: 'Periodiseringar',
   dispositions: 'Dispositioner',
   preview: 'Förhandsgranska',
   execute: 'Verkställ',
@@ -286,6 +288,14 @@ export default function YearEndPage() {
           report={report}
           isLoading={reportLoading}
           error={reportError}
+          onContinue={() => setStep('accruals')}
+        />
+      )}
+
+      {showWizard && step === 'accruals' && selectedPeriodId && (
+        <AccrualsStep
+          periodId={selectedPeriodId}
+          onBack={() => setStep('preflight')}
           onContinue={() => setStep('dispositions')}
         />
       )}
@@ -293,7 +303,7 @@ export default function YearEndPage() {
       {showWizard && step === 'dispositions' && selectedPeriodId && (
         <DispositionsStep
           periodId={selectedPeriodId}
-          onBack={() => setStep('preflight')}
+          onBack={() => setStep('accruals')}
           onContinue={goToPreview}
         />
       )}

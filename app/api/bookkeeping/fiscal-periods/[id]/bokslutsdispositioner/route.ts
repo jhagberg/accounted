@@ -13,7 +13,8 @@ import {
 } from '@/lib/bokslut/reserves/periodiseringsfond-service'
 import { proposeOveravskrivningar } from '@/lib/bokslut/reserves/overavskrivningar-service'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
-import type { DispositionsProposal, ProposedDisposition } from '@/lib/bokslut/types'
+import { buildDispositionsProposal } from '@/lib/bokslut/dispositions-proposal-builder'
+import type { ProposedDisposition } from '@/lib/bokslut/types'
 import type { JournalEntry } from '@/types'
 
 /**
@@ -57,91 +58,13 @@ export const GET = withRouteContext(
     const opLog = log.child({ periodId: id })
 
     try {
-      const { data: period, error: periodError } = await supabase
-        .from('fiscal_periods')
-        .select('id, name, period_start, period_end')
-        .eq('id', id)
-        .eq('company_id', companyId)
-        .single()
-      if (periodError || !period) {
+      const data = await buildDispositionsProposal(supabase, companyId, id)
+      return NextResponse.json({ data })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : ''
+      if (/not found/i.test(message)) {
         return errorResponseFromCode('PERIOD_NOT_FOUND', opLog, { requestId })
       }
-
-      const { data: settings } = await supabase
-        .from('company_settings')
-        .select('entity_type')
-        .eq('company_id', companyId)
-        .maybeSingle()
-      const entityType = (settings?.entity_type ??
-        'aktiebolag') as DispositionsProposal['entityType']
-
-      // EF doesn't book dispositioner — these are handled in NE/INK1. Return
-      // an empty proposal so the wizard can skip the step.
-      if (entityType !== 'aktiebolag') {
-        const incomeStatement = await generateIncomeStatement(supabase, companyId, id)
-        return NextResponse.json({
-          data: {
-            entityType,
-            fiscalPeriod: period,
-            netResultBefore: incomeStatement.net_result,
-            proposals: [],
-          } satisfies DispositionsProposal,
-        })
-      }
-
-      const fiscalYear = parseInt(period.period_end.slice(0, 4), 10)
-      const incomeStatement = await generateIncomeStatement(supabase, companyId, id)
-      const resultBeforeTax = incomeStatement.net_result
-
-      const proposals: ProposedDisposition[] = []
-
-      // 1. Periodiseringsfond återföring (mandatory for ≥6-year-old fonder)
-      const existingFonder = await listExistingPeriodiseringsfonder(
-        supabase,
-        companyId,
-        period.period_end,
-      )
-      const ateforing = proposeAteforing(existingFonder, {
-        schablonintaktRate: DEFAULT_SCHABLONINTAKT_RATE,
-      })
-      proposals.push(...ateforing.proposals)
-
-      // 2. Överavskrivningar — no default; user must enter desired amount
-      //    (Phase 3 will compute from asset register).
-
-      // 3. Periodiseringsfond avsättning — default to max (25 % of result
-      //    before tax adjusted for återföring/schablonintäkt).
-      const taxableBeforeAvsattning =
-        resultBeforeTax +
-        ateforing.proposals.reduce((sum, p) => sum + p.amount, 0) +
-        ateforing.schablonintaktAmount
-      const avsattning = proposeAvsattning({
-        skattemassigtResultatBeforeAvsattning: taxableBeforeAvsattning,
-        fiscalYear,
-      })
-      if (avsattning) proposals.push(avsattning)
-
-      // 4. Särskild löneskatt — auto-computed from posted pension costs
-      const slp = await calculateSarskildLoneskatt(supabase, companyId, id)
-      if (slp) proposals.push(slp)
-
-      // 5. Bolagsskatt — taxable result after p-fond avsättning + schablonintäkt
-      const bolagsskatt = await calculateBolagsskatt(supabase, companyId, id, {
-        manualAdjustments: {
-          schablonintaktPeriodiseringsfond: ateforing.schablonintaktAmount,
-        },
-      })
-      if (bolagsskatt) proposals.push(bolagsskatt)
-
-      return NextResponse.json({
-        data: {
-          entityType,
-          fiscalPeriod: period,
-          netResultBefore: resultBeforeTax,
-          proposals,
-        } satisfies DispositionsProposal,
-      })
-    } catch (err) {
       opLog.error('bokslutsdispositioner preview failed', err as Error)
       return errorResponse(err, opLog, { requestId })
     }

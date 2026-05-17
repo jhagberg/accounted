@@ -12,6 +12,7 @@ import { ArrowRight, AlertTriangle, Loader2 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import { useToast } from '@/components/ui/use-toast'
 import { DepreciationPanel } from './DepreciationPanel'
+import { EfDeclarationSection } from './EfDeclarationSection'
 import type {
   DispositionsProposal,
   ProposedDisposition,
@@ -145,20 +146,18 @@ export function DispositionsStep({ periodId, onBack, onContinue }: DispositionsS
 
   if (!proposal) return null
 
-  // EF: only depreciation applies (no AB-only dispositioner)
+  // EF: depreciation can apply (skattemässig hanteras separat); replace the
+  // AB-only dispositioner with a NE-bilaga declaration section.
   if (proposal.entityType !== 'aktiebolag') {
+    const fiscalYear = parseInt(proposal.fiscalPeriod.period_end.slice(0, 4), 10)
     return (
       <div className="space-y-6">
         <DepreciationPanel periodId={periodId} onPosted={() => void loadProposals()} />
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Inga bokslutsdispositioner</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            För enskild firma bokförs varken bolagsskatt, periodiseringsfond eller överavskrivningar.
-            De räknas i NE-bilagan när du deklarerar.
-          </CardContent>
-        </Card>
+        <EfDeclarationSection
+          fiscalPeriodId={periodId}
+          bookedSurplus={proposal.netResultBefore}
+          fiscalYear={fiscalYear}
+        />
         <div className="flex justify-between">
           <Button variant="outline" onClick={onBack}>Tillbaka</Button>
           <Button onClick={onContinue}>
