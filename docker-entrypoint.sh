@@ -27,17 +27,30 @@ if [ -n "$placeholders_found" ]; then
   printf "WARNING: These variables appear to contain placeholder values:\n%bPlease set them to real values before running in production.\n" "$placeholders_found" >&2
 fi
 
-# Replace build-time placeholder sentinels with runtime env vars in static JS bundles.
-# This allows a single pre-built image to work with any Supabase project.
-if [ -d /app/.next/static ]; then
-  find /app/.next/static -name '*.js' -exec sed -i \
-    -e "s|__NEXT_PUBLIC_SUPABASE_URL__|${NEXT_PUBLIC_SUPABASE_URL}|g" \
-    -e "s|__NEXT_PUBLIC_SUPABASE_ANON_KEY__|${NEXT_PUBLIC_SUPABASE_ANON_KEY}|g" \
-    -e "s|__NEXT_PUBLIC_APP_URL__|${NEXT_PUBLIC_APP_URL}|g" \
-    -e "s|__NEXT_PUBLIC_VAPID_PUBLIC_KEY__|${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}|g" \
-    -e "s|__NEXT_PUBLIC_SELF_HOSTED__|${NEXT_PUBLIC_SELF_HOSTED:-true}|g" \
-    -e "s|__NEXT_PUBLIC_REQUIRE_MFA__|${NEXT_PUBLIC_REQUIRE_MFA:-false}|g" \
-    {} +
+# Replace build-time placeholder sentinels with runtime env vars in both
+# client (.next/static) and server (.next/server + /app/server.js) bundles.
+# Next.js inlines NEXT_PUBLIC_* at build time even on the server, so the
+# server bundle needs the same substitution as the client.
+SUBST_DIRS=""
+# /app/.next root holds routes-manifest.json (CSP), build-manifest.json,
+# prerender-manifest.json, etc. — all baked at build time and may reference
+# NEXT_PUBLIC_* values. Include the whole .next tree, not just static/server.
+[ -d /app/.next ] && SUBST_DIRS="$SUBST_DIRS /app/.next"
+SUBST_FILES=""
+[ -f /app/server.js ] && SUBST_FILES="$SUBST_FILES /app/server.js"
+
+if [ -n "$SUBST_DIRS" ] || [ -n "$SUBST_FILES" ]; then
+  # Match .js (server + client bundles) AND .json (routes-manifest.json holds
+  # the CSP/headers config baked at build time from next.config.ts).
+  # shellcheck disable=SC2086
+  find $SUBST_DIRS $SUBST_FILES -type f \( -name '*.js' -o -name '*.json' \) -print0 2>/dev/null \
+    | xargs -0 -r sed -i \
+        -e "s|__NEXT_PUBLIC_SUPABASE_URL__|${NEXT_PUBLIC_SUPABASE_URL}|g" \
+        -e "s|__NEXT_PUBLIC_SUPABASE_ANON_KEY__|${NEXT_PUBLIC_SUPABASE_ANON_KEY}|g" \
+        -e "s|__NEXT_PUBLIC_APP_URL__|${NEXT_PUBLIC_APP_URL}|g" \
+        -e "s|__NEXT_PUBLIC_VAPID_PUBLIC_KEY__|${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}|g" \
+        -e "s|__NEXT_PUBLIC_SELF_HOSTED__|${NEXT_PUBLIC_SELF_HOSTED:-true}|g" \
+        -e "s|__NEXT_PUBLIC_REQUIRE_MFA__|${NEXT_PUBLIC_REQUIRE_MFA:-false}|g"
 fi
 
 # Stamp the service worker fallback notification title with the brand name.
