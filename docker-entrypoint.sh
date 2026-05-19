@@ -44,8 +44,15 @@ SUBST_PATHS=""
 [ -f /app/server.js ] && SUBST_PATHS="$SUBST_PATHS /app/server.js"
 
 if [ -n "$SUBST_PATHS" ]; then
+  # File-type coverage:
+  #   *.js   — client + server bundles
+  #   *.json — routes-manifest.json (CSP/headers), build-manifest.json, etc.
+  #   *.html — prerendered pages (e.g. /login title contains BRANDING_APP_NAME)
+  #   *.rsc  — RSC payloads with the same inlined values
+  #   *.body — metadata-route bodies, e.g. manifest.webmanifest.body (PWA name)
   # shellcheck disable=SC2086
-  find $SUBST_PATHS -type f \( -name '*.js' -o -name '*.json' \) \
+  find $SUBST_PATHS -type f \
+        \( -name '*.js' -o -name '*.json' -o -name '*.html' -o -name '*.rsc' -o -name '*.body' \) \
         -exec grep -l "__NEXT_PUBLIC_" {} + 2>/dev/null \
     | xargs -r sed -i \
         -e "s|__NEXT_PUBLIC_SUPABASE_URL__|${NEXT_PUBLIC_SUPABASE_URL}|g" \
