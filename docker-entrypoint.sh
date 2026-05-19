@@ -27,39 +27,34 @@ if [ -n "$placeholders_found" ]; then
   printf "WARNING: These variables appear to contain placeholder values:\n%bPlease set them to real values before running in production.\n" "$placeholders_found" >&2
 fi
 
-# Replace build-time placeholder sentinels with runtime env vars in both
-# client (.next/static) and server (.next/server + /app/server.js) bundles.
-# Next.js inlines NEXT_PUBLIC_* at build time even on the server, so the
-# server bundle needs the same substitution as the client.
-SUBST_DIRS=""
-# /app/.next root holds routes-manifest.json (CSP), build-manifest.json,
-# prerender-manifest.json, etc. — all baked at build time and may reference
-# NEXT_PUBLIC_* values. Include the whole .next tree, not just static/server.
-[ -d /app/.next ] && SUBST_DIRS="$SUBST_DIRS /app/.next"
-SUBST_FILES=""
-[ -f /app/server.js ] && SUBST_FILES="$SUBST_FILES /app/server.js"
+# Replace build-time placeholder sentinels with runtime env vars across:
+#   - /app/.next  (client static + server bundles + manifests; the manifests
+#                  at .next/ root hold the CSP/headers from next.config.ts)
+#   - /app/server.js  (standalone entrypoint)
+#   - /app/public  (sw.js — service worker is served raw, not bundled, so
+#                   Next's build-time inlining doesn't reach it)
+#
+# `sed -i` triggers a Docker overlay copy-up on every file it touches, so we
+# prefilter with `grep -l` and only sed the files that actually contain a
+# placeholder. busybox grep does not support -Z, so we rely on Next.js build
+# outputs not having newlines in filenames (true for generated artifacts).
+SUBST_PATHS=""
+[ -d /app/.next ]     && SUBST_PATHS="$SUBST_PATHS /app/.next"
+[ -d /app/public ]    && SUBST_PATHS="$SUBST_PATHS /app/public"
+[ -f /app/server.js ] && SUBST_PATHS="$SUBST_PATHS /app/server.js"
 
-if [ -n "$SUBST_DIRS" ] || [ -n "$SUBST_FILES" ]; then
-  # Match .js (server + client bundles) AND .json (routes-manifest.json holds
-  # the CSP/headers config baked at build time from next.config.ts).
+if [ -n "$SUBST_PATHS" ]; then
   # shellcheck disable=SC2086
-  find $SUBST_DIRS $SUBST_FILES -type f \( -name '*.js' -o -name '*.json' \) -print0 2>/dev/null \
-    | xargs -0 -r sed -i \
+  find $SUBST_PATHS -type f \( -name '*.js' -o -name '*.json' \) \
+        -exec grep -l "__NEXT_PUBLIC_" {} + 2>/dev/null \
+    | xargs -r sed -i \
         -e "s|__NEXT_PUBLIC_SUPABASE_URL__|${NEXT_PUBLIC_SUPABASE_URL}|g" \
         -e "s|__NEXT_PUBLIC_SUPABASE_ANON_KEY__|${NEXT_PUBLIC_SUPABASE_ANON_KEY}|g" \
         -e "s|__NEXT_PUBLIC_APP_URL__|${NEXT_PUBLIC_APP_URL}|g" \
         -e "s|__NEXT_PUBLIC_VAPID_PUBLIC_KEY__|${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}|g" \
         -e "s|__NEXT_PUBLIC_SELF_HOSTED__|${NEXT_PUBLIC_SELF_HOSTED:-true}|g" \
-        -e "s|__NEXT_PUBLIC_REQUIRE_MFA__|${NEXT_PUBLIC_REQUIRE_MFA:-false}|g"
-fi
-
-# Stamp the service worker fallback notification title with the brand name.
-# public/sw.js is served as a static file (not bundled by Next), so NEXT_PUBLIC_*
-# inlining doesn't reach it — substitute the placeholder here at container start.
-if [ -f /app/public/sw.js ]; then
-  sed -i \
-    -e "s|__NEXT_PUBLIC_BRANDING_APP_NAME__|${NEXT_PUBLIC_BRANDING_APP_NAME:-Gnubok}|g" \
-    /app/public/sw.js
+        -e "s|__NEXT_PUBLIC_REQUIRE_MFA__|${NEXT_PUBLIC_REQUIRE_MFA:-false}|g" \
+        -e "s|__NEXT_PUBLIC_BRANDING_APP_NAME__|${NEXT_PUBLIC_BRANDING_APP_NAME:-Gnubok}|g"
 fi
 
 exec "$@"
