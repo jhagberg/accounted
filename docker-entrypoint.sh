@@ -44,24 +44,51 @@ SUBST_PATHS=""
 [ -f /app/server.js ] && SUBST_PATHS="$SUBST_PATHS /app/server.js"
 
 if [ -n "$SUBST_PATHS" ]; then
+  # Escape sed replacement metacharacters in the values: backslash, & (whole
+  # match), and the chosen delimiter (|). Otherwise a value like
+  # "Acme & Co." (legal in NEXT_PUBLIC_BRANDING_APP_NAME) would corrupt the
+  # output, and a value containing | would break the sed command outright.
+  # Uses busybox-ash-compatible parameter expansion (verified on busybox 1.37).
+  sed_esc() {
+    v=$1
+    v=${v//\\/\\\\}
+    v=${v//&/\\&}
+    v=${v//|/\\|}
+    printf %s "$v"
+  }
+  E_SUPABASE_URL=$(sed_esc "$NEXT_PUBLIC_SUPABASE_URL")
+  E_SUPABASE_ANON_KEY=$(sed_esc "$NEXT_PUBLIC_SUPABASE_ANON_KEY")
+  E_APP_URL=$(sed_esc "$NEXT_PUBLIC_APP_URL")
+  E_VAPID_PUBLIC_KEY=$(sed_esc "${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}")
+  E_SELF_HOSTED=$(sed_esc "${NEXT_PUBLIC_SELF_HOSTED:-true}")
+  E_REQUIRE_MFA=$(sed_esc "${NEXT_PUBLIC_REQUIRE_MFA:-false}")
+  E_BRANDING_APP_NAME=$(sed_esc "${NEXT_PUBLIC_BRANDING_APP_NAME:-Gnubok}")
+
   # File-type coverage:
   #   *.js   — client + server bundles
   #   *.json — routes-manifest.json (CSP/headers), build-manifest.json, etc.
   #   *.html — prerendered pages (e.g. /login title contains BRANDING_APP_NAME)
   #   *.rsc  — RSC payloads with the same inlined values
   #   *.body — metadata-route bodies, e.g. manifest.webmanifest.body (PWA name)
+  #
+  # grep -l prefilters so sed only triggers a Docker overlay copy-up on files
+  # that actually contain a placeholder. We pipe through `tr` so filenames
+  # with spaces (possible under /app/public/) survive intact via xargs -0;
+  # busybox xargs does not support -d. Newlines in filenames are not
+  # supported, which is fine for build outputs.
   # shellcheck disable=SC2086
   find $SUBST_PATHS -type f \
         \( -name '*.js' -o -name '*.json' -o -name '*.html' -o -name '*.rsc' -o -name '*.body' \) \
         -exec grep -l "__NEXT_PUBLIC_" {} + 2>/dev/null \
-    | xargs -r sed -i \
-        -e "s|__NEXT_PUBLIC_SUPABASE_URL__|${NEXT_PUBLIC_SUPABASE_URL}|g" \
-        -e "s|__NEXT_PUBLIC_SUPABASE_ANON_KEY__|${NEXT_PUBLIC_SUPABASE_ANON_KEY}|g" \
-        -e "s|__NEXT_PUBLIC_APP_URL__|${NEXT_PUBLIC_APP_URL}|g" \
-        -e "s|__NEXT_PUBLIC_VAPID_PUBLIC_KEY__|${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}|g" \
-        -e "s|__NEXT_PUBLIC_SELF_HOSTED__|${NEXT_PUBLIC_SELF_HOSTED:-true}|g" \
-        -e "s|__NEXT_PUBLIC_REQUIRE_MFA__|${NEXT_PUBLIC_REQUIRE_MFA:-false}|g" \
-        -e "s|__NEXT_PUBLIC_BRANDING_APP_NAME__|${NEXT_PUBLIC_BRANDING_APP_NAME:-Gnubok}|g"
+    | tr '\n' '\0' \
+    | xargs -0 -r sed -i \
+        -e "s|__NEXT_PUBLIC_SUPABASE_URL__|${E_SUPABASE_URL}|g" \
+        -e "s|__NEXT_PUBLIC_SUPABASE_ANON_KEY__|${E_SUPABASE_ANON_KEY}|g" \
+        -e "s|__NEXT_PUBLIC_APP_URL__|${E_APP_URL}|g" \
+        -e "s|__NEXT_PUBLIC_VAPID_PUBLIC_KEY__|${E_VAPID_PUBLIC_KEY}|g" \
+        -e "s|__NEXT_PUBLIC_SELF_HOSTED__|${E_SELF_HOSTED}|g" \
+        -e "s|__NEXT_PUBLIC_REQUIRE_MFA__|${E_REQUIRE_MFA}|g" \
+        -e "s|__NEXT_PUBLIC_BRANDING_APP_NAME__|${E_BRANDING_APP_NAME}|g"
 fi
 
 exec "$@"
