@@ -263,7 +263,85 @@ Check the [release notes](https://github.com/erp-mafia/gnubok/releases) for migr
 └─────────────────────┘
 ```
 
-The Next.js app is stateless — all data lives in Supabase. The Docker entrypoint injects your `NEXT_PUBLIC_*` environment variables into the pre-built JS bundles at container startup, so a single image works with any Supabase project.
+The Next.js app is stateless — all data lives in Supabase. The Docker entrypoint injects your `NEXT_PUBLIC_*` environment variables into the pre-built artifacts at container startup, so a single image works with any Supabase project.
+
+## Fully Self-Hosted (No Supabase Cloud)
+
+The setup above relies on a Supabase project at supabase.com. If you also want to host the database, auth, and storage yourself — to keep all data on-premises, avoid the SaaS dependency, or run air-gapped — you can pair gnubok with [Supabase's official Docker self-hosting stack](https://supabase.com/docs/guides/self-hosting/docker) instead.
+
+This is a more involved path. You take responsibility for backups, TLS certificates, image upgrades, and Postgres operations. Intended for operators already running Docker services who are comfortable with PostgreSQL.
+
+### Architecture
+
+```
+       ┌────────────────────────────────────────┐
+       │       Reverse proxy + TLS              │
+       │ (Caddy / Traefik / nginx, your choice) │
+       └───┬─────────────────┬──────────────────┘
+           │                 │
+gnubok.example.com   supabase.example.com
+           │                 │
+┌──────────▼─────────┐  ┌────▼────────────────────┐
+│  gnubok app + cron │  │  Supabase stack         │
+│  (this repo)       │◄─┤  postgres, gotrue,      │
+│                    │  │  postgrest, realtime,   │
+│                    │  │  storage, kong, studio  │
+└────────────────────┘  └─────────────────────────┘
+       both share an external Docker network
+```
+
+### Setup outline
+
+1. **Bring up Supabase** following [supabase.com/docs/guides/self-hosting/docker](https://supabase.com/docs/guides/self-hosting/docker). Generate your own `JWT_SECRET`, `ANON_KEY`, and `SERVICE_ROLE_KEY` with `sh utils/generate-keys.sh --update-env`. Pick a hostname for the API gateway (e.g. `supabase.example.com`) and point `SUPABASE_PUBLIC_URL` / `API_EXTERNAL_URL` at it.
+
+2. **Apply gnubok migrations** directly via `psql` (the Supabase CLI assumes a cloud project, so use the SQL files directly):
+
+   ```bash
+   # From the gnubok repo root, against the supabase-db container
+   mkdir -p /tmp/gnubok-sql-stage
+   cp supabase/migrations/*.sql /tmp/gnubok-sql-stage/
+   docker cp /tmp/gnubok-sql-stage supabase-db:/tmp/gnubok-sql
+   docker exec supabase-db bash -lc '
+     cd /tmp/gnubok-sql && for f in $(ls *.sql | sort); do
+       echo "$f"
+       psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f "$f" || exit 1
+     done
+   '
+   ```
+
+3. **Configure gnubok's `.env`** with your self-hosted endpoints (extract the keys from your Supabase `.env`):
+
+   ```bash
+   NEXT_PUBLIC_SUPABASE_URL=https://supabase.example.com
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=<ANON_KEY from supabase .env>
+   SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY from supabase .env>
+   NEXT_PUBLIC_APP_URL=https://gnubok.example.com
+   CRON_SECRET=<openssl rand -hex 32>
+   NEXT_PUBLIC_SELF_HOSTED=true
+   ```
+
+4. **Add gnubok's callback URLs** to GoTrue's redirect allowlist in the Supabase stack's `.env`, then recreate the auth container so it picks up the new value:
+
+   ```bash
+   ADDITIONAL_REDIRECT_URLS=https://gnubok.example.com/auth/callback,https://gnubok.example.com/api/auth/callback
+   ```
+   ```bash
+   cd <your-supabase-dir> && docker compose up -d auth
+   ```
+
+5. **Reverse proxy** in front of both hosts. Both the gnubok app container and the Supabase `kong` container need to be reachable on a shared external Docker network so the proxy can route by `container_name`.
+
+### What you give up vs. cloud Supabase
+
+- **Backups** are entirely your responsibility — set up `pg_dump` to off-host storage.
+- **Storage**: the included `storage-api` defaults to the local-filesystem backend. For production durability, use the `docker-compose.s3.yml` overlay and point it at S3 / MinIO / rustfs.
+- **SMTP**: no built-in mailer. Either set `ENABLE_EMAIL_AUTOCONFIRM=true` for dev/staging, or wire `SMTP_*` env vars in the Supabase stack to a provider (Resend, Postmark, etc.).
+- **Upgrades**: you sync the `supabase/postgres` image yourself and re-run gnubok migrations after each upgrade.
+
+### Notes
+
+- **`pg_cron`** is included in the `supabase/postgres` image, so migration 048 succeeds (unlike on the Supabase free tier — see the standard self-hosting flow above).
+- **MFA**: same rule as the standard path — `NEXT_PUBLIC_SELF_HOSTED=true` disables enforcement. Users may still enable TOTP voluntarily.
 
 ## Troubleshooting
 
