@@ -246,21 +246,15 @@ Check the [release notes](https://github.com/erp-mafia/gnubok/releases) for migr
 
 ## Architecture Overview
 
-```
-┌─────────────────────┐     ┌──────────────────┐
-│   Docker: app       │     │  Docker: cron     │
-│   (Next.js)         │◄────│  (supercronic)    │
-│   Port 3000         │     │  Bearer auth      │
-└────────┬────────────┘     └──────────────────┘
-         │
-         │ HTTPS
-         ▼
-┌─────────────────────┐
-│  Supabase           │
-│  - PostgreSQL + RLS │
-│  - Auth (email+pw)  │
-│  - Storage (docs)   │
-└─────────────────────┘
+```mermaid
+flowchart LR
+    subgraph host["Your host (Docker)"]
+        app["app<br/>Next.js · :3000"]
+        cron["cron<br/>supercronic"]
+        cron -. Bearer CRON_SECRET .-> app
+    end
+    sb[("Supabase cloud<br/>PostgreSQL + RLS<br/>Auth (email+pw)<br/>Storage (docs)")]
+    app -- HTTPS --> sb
 ```
 
 The Next.js app is stateless — all data lives in Supabase. The Docker entrypoint injects your `NEXT_PUBLIC_*` environment variables into the pre-built artifacts at container startup, so a single image works with any Supabase project.
@@ -273,21 +267,37 @@ This is a more involved path. You take responsibility for backups, TLS certifica
 
 ### Architecture
 
-```
-       ┌────────────────────────────────────────┐
-       │       Reverse proxy + TLS              │
-       │ (Caddy / Traefik / nginx, your choice) │
-       └───┬─────────────────┬──────────────────┘
-           │                 │
-gnubok.example.com   supabase.example.com
-           │                 │
-┌──────────▼─────────┐  ┌────▼────────────────────┐
-│  gnubok app + cron │  │  Supabase stack         │
-│  (this repo)       │◄─┤  postgres, gotrue,      │
-│                    │  │  postgrest, realtime,   │
-│                    │  │  storage, kong, studio  │
-└────────────────────┘  └─────────────────────────┘
-       both share an external Docker network
+```mermaid
+flowchart LR
+    user((User))
+    proxy["Reverse proxy + TLS<br/>(Caddy / Traefik / nginx)"]
+    user -- HTTPS --> proxy
+
+    subgraph dnet["shared Docker network"]
+        subgraph gnubok_stack["gnubok stack (this repo)"]
+            app["app<br/>Next.js · :3000"]
+            cron["cron<br/>supercronic"]
+            cron -. Bearer CRON_SECRET .-> app
+        end
+
+        subgraph supabase_stack["Supabase self-host stack"]
+            kong["kong<br/>API gateway · :8000"]
+            studio["studio<br/>dashboard"]
+            db[("postgres<br/>+ pg_cron")]
+            auth["gotrue"]
+            rest["postgrest"]
+            rt["realtime"]
+            storage["storage-api<br/>(+ imgproxy)"]
+            kong --- auth & rest & rt & storage & studio
+            auth & rest & rt & storage --- db
+        end
+
+        app -- "@supabase/supabase-js" --> kong
+    end
+
+    proxy -- gnubok.example.com --> app
+    proxy -- supabase.example.com --> kong
+    proxy -- studio.example.com --> studio
 ```
 
 ### Setup outline
