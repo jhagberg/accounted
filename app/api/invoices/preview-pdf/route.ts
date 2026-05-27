@@ -98,7 +98,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Företagsinställningar saknas' }, { status: 404 })
   }
 
-  const vatRules = getVatRules(customer.customer_type, customer.vat_number_validated)
+  // Match the creation API: a non-VAT-registered seller may not charge VAT
+  // (ML 1 kap. 1§). Coerce instead of rejecting so the preview always renders
+  // — the form may still be carrying a stale 25% selection while the user
+  // hasn't yet noticed the rate picker locked itself. Default `true` mirrors
+  // the API and getVatRules' own default — a NULL column must not silently
+  // strip VAT from a preview the seller is about to send.
+  const vatRegistered = (company as CompanySettings).vat_registered ?? true
+  const vatRules = getVatRules(customer.customer_type, customer.vat_number_validated, vatRegistered)
 
   const docType: InvoiceDocumentType = document_type || 'invoice'
   const isDeliveryNote = docType === 'delivery_note'
@@ -106,7 +113,7 @@ export async function POST(request: Request) {
   // Build items with line totals and per-item VAT
   const invoiceItems: InvoiceItem[] = items.map((item: { description: string; quantity: number; unit: string; unit_price: number; vat_rate?: number }, index: number) => {
     const lineTotal = Math.round(item.quantity * item.unit_price * 100) / 100
-    const rate = item.vat_rate ?? vatRules.rate
+    const rate = vatRegistered ? (item.vat_rate ?? vatRules.rate) : 0
     return {
       id: `preview-${index}`,
       invoice_id: 'preview',

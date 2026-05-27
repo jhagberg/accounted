@@ -1227,6 +1227,11 @@ const DOCUMENT: Record<string, StructuredErrorEntry> = {
     message_sv: 'Filen kunde inte sparas.',
     message_en: 'Document storage failed.',
   },
+  DOC_UPLOAD_PERIOD_LOCKED: {
+    httpStatus: 400,
+    message_sv: 'Det går inte att bifoga underlag till verifikationer i en låst eller stängd period.',
+    message_en: 'Cannot attach documents to entries in a locked or closed fiscal period.',
+  },
   DOC_DOWNLOAD_FAILED: {
     httpStatus: 500,
     message_sv: 'Det gick inte att skapa nedladdningslänken.',

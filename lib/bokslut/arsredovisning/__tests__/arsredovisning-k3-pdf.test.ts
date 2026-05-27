@@ -119,6 +119,14 @@ function makeMinimalK3Data(): ArsredovisningData {
     },
     signatures: [],
     warnings: [],
+    disclosures: {
+      long_term_debt_over_five_years: null,
+      securities_pledged: null,
+      contingent_liabilities: null,
+      parent_company_name: null,
+      parent_company_org_number: null,
+      parent_company_city: null,
+    },
   }
 }
 

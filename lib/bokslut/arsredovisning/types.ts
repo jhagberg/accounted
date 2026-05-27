@@ -111,6 +111,17 @@ export interface ArsredovisningData {
    *  uppgifter saknas, AGM-datum saknas, K3 entity. Never an error — the
    *  user can still download to iterate. */
   warnings: string[]
+  /** Manual disclosure overrides persisted on arsredovisning_narratives.
+   *  Drive the long-term debt, säkerheter, eventualförpliktelser, and
+   *  koncernförhållanden notes. Null means "use the boilerplate". */
+  disclosures: {
+    long_term_debt_over_five_years: number | null
+    securities_pledged: string | null
+    contingent_liabilities: string | null
+    parent_company_name: string | null
+    parent_company_org_number: string | null
+    parent_company_city: string | null
+  }
 }
 
 /**

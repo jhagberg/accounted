@@ -105,6 +105,7 @@ export default function NewInvoicePage() {
   const [showBankSetup, setShowBankSetup] = useState(false)
   const [accountingMethod, setAccountingMethod] = useState<'accrual' | 'cash'>('accrual')
   const [oreRounding, setOreRounding] = useState<boolean>(true)
+  const [vatRegistered, setVatRegistered] = useState<boolean>(true)
   const [numberPreview, setNumberPreview] = useState<string | null>(null)
   const [logoUrl, setLogoUrl] = useState<string | null>(null)
   // True only when the user had zero invoices when this page loaded. The
@@ -182,7 +183,7 @@ export default function NewInvoicePage() {
     if (!company?.id) return
     const { data } = await supabase
       .from('company_settings')
-      .select('invoice_default_notes, clearing_number, account_number, bankgiro, accounting_method, ore_rounding, logo_url')
+      .select('invoice_default_notes, clearing_number, account_number, bankgiro, accounting_method, ore_rounding, logo_url, vat_registered')
       .eq('company_id', company.id)
       .single()
     if (data?.invoice_default_notes) {
@@ -199,6 +200,9 @@ export default function NewInvoicePage() {
       setOreRounding(data.ore_rounding)
     }
     setLogoUrl(data?.logo_url ?? null)
+    if (typeof data?.vat_registered === 'boolean') {
+      setVatRegistered(data.vat_registered)
+    }
   }
 
   // First-invoice detection (issue #520): captured at page load so the
@@ -257,9 +261,11 @@ export default function NewInvoicePage() {
         )
       }
 
-      // When customer forces a single rate (reverse charge/export), update all lines
+      // When customer forces a single rate (reverse charge/export), or the
+      // seller isn't VAT-registered, update all lines so the picker can't
+      // leave stale 25% values behind.
       if (customer) {
-        const rates = getAvailableVatRates(customer.customer_type, customer.vat_number_validated)
+        const rates = getAvailableVatRates(customer.customer_type, customer.vat_number_validated, vatRegistered)
         if (rates.length === 1) {
           const forcedRate = rates[0].rate
           watchItems.forEach((_, i) => {
@@ -268,7 +274,7 @@ export default function NewInvoicePage() {
         }
       }
     }
-  }, [watchCustomerId, customers, setValue])
+  }, [watchCustomerId, customers, setValue, vatRegistered])
 
   async function fetchCustomers() {
     if (!company?.id) return
@@ -325,11 +331,11 @@ export default function NewInvoicePage() {
   }, 0)
 
   const vatRules = selectedCustomer
-    ? getVatRules(selectedCustomer.customer_type, selectedCustomer.vat_number_validated)
+    ? getVatRules(selectedCustomer.customer_type, selectedCustomer.vat_number_validated, vatRegistered)
     : null
 
   const availableRates = selectedCustomer
-    ? getAvailableVatRates(selectedCustomer.customer_type, selectedCustomer.vat_number_validated)
+    ? getAvailableVatRates(selectedCustomer.customer_type, selectedCustomer.vat_number_validated, vatRegistered)
     : []
   const isRateLocked = availableRates.length === 1
 

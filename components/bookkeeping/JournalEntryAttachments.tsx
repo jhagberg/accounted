@@ -327,11 +327,25 @@ export default function JournalEntryAttachments({
 
                 {expandedDoc === doc.id && doc.download_url && isPdfType(doc.mime_type) && (
                   <div className="px-2 py-2">
-                    <iframe
-                      src={`/api/documents/${doc.id}/inline`}
-                      title={doc.file_name}
+                    {/* <object> + type="application/pdf" invokes Chrome's PDF
+                        plugin directly. <iframe> intermittently surfaced
+                        "Det här innehållet har blockerats" in Chrome even
+                        with a permissive CSP. See crbug.com/271452. */}
+                    <object
+                      data={`/api/documents/${doc.id}/inline`}
+                      type="application/pdf"
+                      aria-label={doc.file_name}
                       className="w-full h-[60vh] rounded-lg border"
-                    />
+                    >
+                      <a
+                        href={doc.download_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block px-4 py-2 text-sm text-muted-foreground underline"
+                      >
+                        {t('download')}
+                      </a>
+                    </object>
                   </div>
                 )}
               </div>

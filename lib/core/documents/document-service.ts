@@ -57,6 +57,55 @@ export function validateDocumentFile(file: { size: number; type?: string }): str
   return null
 }
 
+/**
+ * Inspect the first bytes of a buffer to identify the actual file format.
+ * Defends against callers (typically MCP agents) that base64-encode a text
+ * placeholder or summary instead of the real binary file — those uploads
+ * succeed at the storage layer but the bytes are unreadable as a PDF/image.
+ */
+function detectFileMagic(bytes: Uint8Array): string | null {
+  if (bytes.length < 4) return null
+  // PDF: %PDF-  (allow a leading UTF-8 BOM as some tools prepend one)
+  const offset = bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF ? 3 : 0
+  if (
+    bytes.length >= offset + 5 &&
+    bytes[offset] === 0x25 &&
+    bytes[offset + 1] === 0x50 &&
+    bytes[offset + 2] === 0x44 &&
+    bytes[offset + 3] === 0x46 &&
+    bytes[offset + 4] === 0x2D
+  ) return 'application/pdf'
+  // PNG: 89 50 4E 47
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return 'image/png'
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return 'image/jpeg'
+  // WebP: RIFF<4-byte size>WEBP
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return 'image/webp'
+  return null
+}
+
+/**
+ * Verify the buffer actually contains a file of the declared type.
+ * Returns an error string or null if valid. HEIC has many ftyp brands so
+ * we skip the check for now — the UI path doesn't allow HEIC anyway, only
+ * the MCP upload tool does, and corrupted HEIC has not been observed.
+ */
+export function validateDocumentMagicBytes(buffer: ArrayBuffer, declaredMimeType: string): string | null {
+  if (declaredMimeType === 'image/heic') return null
+  const detected = detectFileMagic(new Uint8Array(buffer))
+  if (!detected) {
+    return `Filinnehållet kunde inte verifieras som ${declaredMimeType}. Filen verkar vara skadad eller inte en riktig binärfil — vid uppladdning via API, kontrollera att file_content_base64 är base64-kodade råbytes, inte en textrepresentation.`
+  }
+  if (detected !== declaredMimeType) {
+    return `Filinnehållet matchar inte den angivna filtypen (förväntade ${declaredMimeType}, hittade ${detected}).`
+  }
+  return null
+}
+
 let bucketVerified = false
 
 /** @internal Reset bucket verification flag — for testing only */
@@ -112,6 +161,12 @@ export async function uploadDocument(
   } = {}
 ): Promise<DocumentAttachment> {
   await ensureDocumentsBucket()
+
+  // Reject corrupt uploads at the boundary — see validateDocumentMagicBytes.
+  if (file.type) {
+    const magicError = validateDocumentMagicBytes(file.buffer, file.type)
+    if (magicError) throw new Error(magicError)
+  }
 
   // Compute SHA-256 hash
   const sha256Hash = await computeSHA256(file.buffer)
@@ -185,6 +240,11 @@ export async function createNewVersion(
   file: { name: string; buffer: ArrayBuffer; type?: string }
 ): Promise<DocumentAttachment> {
   await ensureDocumentsBucket()
+
+  if (file.type) {
+    const magicError = validateDocumentMagicBytes(file.buffer, file.type)
+    if (magicError) throw new Error(magicError)
+  }
 
   // Compute SHA-256 hash
   const sha256Hash = await computeSHA256(file.buffer)

@@ -6,7 +6,7 @@ import { generateKassaflodesanalys } from '@/lib/reports/kassaflodesanalys'
 import { listAssets } from '@/lib/bokslut/assets/asset-service'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { LATENT_TAX_DEFAULT_RATE } from '@/lib/bokslut/tax-provision/latent-tax-calculator'
-import { getNarrative } from './narrative-service'
+import { getNarrative, type NarrativeRow } from './narrative-service'
 import {
   anyAssetHasComponents,
   buildEquityChangesNote,
@@ -14,6 +14,8 @@ import {
   buildMateriellaAnlaggningsNot,
   buildUppskjutenSkattNot,
 } from './k3-noter-builder'
+import { buildAnlaggningstillgangarNote } from './anlaggningstillgangar-note'
+import { computeMedelantalAnstallda } from '@/lib/salary/medelantal'
 import type {
   ArsredovisningData,
   EgenKapitalRow,
@@ -135,8 +137,23 @@ export async function buildArsredovisningData(
   // yet emitted" is removed below now that we actually emit them.
   const { notes: noter, warnings: noterWarnings } =
     accountingFramework === 'k3'
-      ? await buildK3Noter(supabase, companyId, fiscalPeriodId, entityType, period.period_end)
-      : await buildK2Noter(supabase, companyId, entityType)
+      ? await buildK3Noter(
+          supabase,
+          companyId,
+          fiscalPeriodId,
+          entityType,
+          period.period_start,
+          period.period_end,
+          narrative,
+        )
+      : await buildK2Noter(
+          supabase,
+          companyId,
+          entityType,
+          period.period_start,
+          period.period_end,
+          narrative,
+        )
 
   // Kassaflödesanalys + separate equity-changes statement — K3 only. K2
   // mindre företag is exempt from kassaflödesanalys (BFNAR 2016:10 punkt
@@ -270,6 +287,14 @@ export async function buildArsredovisningData(
     kassaflodesanalys,
     equity_changes_statement,
     signatures: [], // populated by signature-flow service in a later phase step
+    disclosures: {
+      long_term_debt_over_five_years: narrative?.long_term_debt_over_five_years ?? null,
+      securities_pledged: narrative?.securities_pledged ?? null,
+      contingent_liabilities: narrative?.contingent_liabilities ?? null,
+      parent_company_name: narrative?.parent_company_name ?? null,
+      parent_company_org_number: narrative?.parent_company_org_number ?? null,
+      parent_company_city: narrative?.parent_company_city ?? null,
+    },
   }
 }
 
@@ -378,6 +403,9 @@ async function buildK2Noter(
   supabase: SupabaseClient,
   companyId: string,
   entityType: string,
+  periodStart: string,
+  periodEnd: string,
+  narrative: NarrativeRow | null,
 ): Promise<{ notes: NoteEntry[]; warnings: string[] }> {
   const notes: NoteEntry[] = []
   const warnings: string[] = []
@@ -435,7 +463,8 @@ async function buildK2Noter(
     }
   }
 
-  // Avskrivningstider — derive from asset register
+  // Avskrivningstider — derive from asset register (supplementary
+  // disclosure; the statutory ÅRL 5:8 § roll-forward follows below).
   const assets = await listAssets(supabase, companyId)
   if (assets.length > 0) {
     const byCategory = new Map<string, Set<number>>()
@@ -463,32 +492,107 @@ async function buildK2Noter(
         lines.push(`• ${categoryLabels[cat] ?? cat}: ${yrsLabel}`)
       }
       notes.push({
-        number: 2,
+        number: notes.length + 1,
         title: 'Avskrivningar',
         body: lines.join('\n'),
       })
     }
   }
 
-  // Medelantal anställda — count active employees as a proxy
-  const { count: employeeCount } = await supabase
+  // Anläggningstillgångar roll-forward (ÅRL 5:8 §). Per-category IB →
+  // tillkommande → avgående → UB anskaffningsvärde, same for ackumulerade
+  // avskrivningar, ending in utgående redovisat värde. Hard ÅR requirement
+  // for any company with assets on the books.
+  const rollforwardNote = buildAnlaggningstillgangarNote({
+    noteNumber: notes.length + 1,
+    assets: assets.map((a) => ({
+      category: a.category,
+      acquisition_date: a.acquisition_date,
+      acquisition_cost: a.acquisition_cost,
+      salvage_value: a.salvage_value,
+      useful_life_months: a.useful_life_months,
+      disposed_at: a.disposed_at,
+    })),
+    periodStart,
+    periodEnd,
+  })
+  if (rollforwardNote) notes.push(rollforwardNote)
+
+  // Medelantal anställda — FTE-weighted average per ÅRL 5:20 §. We fetch the
+  // full employment-window data because the column 'is_active' doesn't exist
+  // on the employees table; a count() filtered by it would always return 0.
+  // ÅRL 5:20 § requires the note for AB regardless of value — "0" must be
+  // disclosed as "Inga anställda". For enskild firma the disclosure is
+  // discretionary, so we still skip when medelantal === 0 there.
+  const { data: employeeRows } = await supabase
     .from('employees')
-    .select('id', { count: 'exact', head: true })
+    .select('employment_start, employment_end, employment_degree')
     .eq('company_id', companyId)
-    .eq('is_active', true)
-  if ((employeeCount ?? 0) > 0) {
+  const medelantal = computeMedelantalAnstallda(
+    (employeeRows ?? []) as Array<{
+      employment_start: string
+      employment_end: string | null
+      employment_degree: number
+    }>,
+    periodStart,
+    periodEnd,
+  )
+  if (medelantal > 0 || entityType === 'aktiebolag') {
     notes.push({
       number: notes.length + 1,
       title: 'Medelantal anställda',
-      body: `Under räkenskapsåret har medeltalet anställda uppgått till ${employeeCount}.`,
+      body:
+        medelantal > 0
+          ? `Under räkenskapsåret har medeltalet anställda uppgått till ${medelantal}.`
+          : 'Bolaget har inte haft några anställda under räkenskapsåret.',
     })
   }
 
+  // Långfristiga skulder förfallande efter mer än fem år (ÅRL 5:13 §).
+  // Disclosed amount lives on arsredovisning_narratives as a manual entry;
+  // loan-maturity data isn't tagged in journal lines so we can't derive it.
+  // A null/zero value defaults to "Inga." per Swedish ÅR convention.
+  const longTermDebtAmount = narrative?.long_term_debt_over_five_years ?? null
   notes.push({
     number: notes.length + 1,
-    title: 'Ställda säkerheter och eventualförpliktelser',
-    body: 'Inga.',
+    title: 'Långfristiga skulder',
+    body:
+      longTermDebtAmount && longTermDebtAmount > 0
+        ? `Av långfristiga skulder förfaller ${longTermDebtAmount.toLocaleString('sv-SE')} kr till betalning senare än fem år efter balansdagen.`
+        : 'Inga skulder förfaller till betalning senare än fem år efter balansdagen.',
   })
+
+  // Ställda säkerheter (ÅRL 5:14 §) — separate disclosure from
+  // eventualförpliktelser. Manual override on arsredovisning_narratives,
+  // defaulting to "Inga.".
+  notes.push({
+    number: notes.length + 1,
+    title: 'Ställda säkerheter',
+    body: narrative?.securities_pledged?.trim() || 'Inga.',
+  })
+
+  // Eventualförpliktelser (ÅRL 5:15 §)
+  notes.push({
+    number: notes.length + 1,
+    title: 'Eventualförpliktelser',
+    body: narrative?.contingent_liabilities?.trim() || 'Inga.',
+  })
+
+  // Koncernförhållanden (BFNAR 2016:10 kap. 19). Emitted only when a parent
+  // company is configured — companies without a parent skip this note.
+  const parentName = narrative?.parent_company_name?.trim()
+  if (parentName) {
+    const parts: string[] = [`Moderföretag: ${parentName}.`]
+    if (narrative?.parent_company_org_number)
+      parts.push(`Organisationsnummer: ${narrative.parent_company_org_number}.`)
+    if (narrative?.parent_company_city)
+      parts.push(`Säte: ${narrative.parent_company_city}.`)
+    notes.push({
+      number: notes.length + 1,
+      title: 'Koncernförhållanden',
+      body: parts.join(' '),
+    })
+  }
 
   return { notes, warnings }
 }
@@ -510,7 +614,9 @@ async function buildK3Noter(
   companyId: string,
   fiscalPeriodId: string,
   entityType: string,
+  periodStartIso: string,
   periodEndIso: string,
+  narrative: NarrativeRow | null,
 ): Promise<{ notes: NoteEntry[]; warnings: string[] }> {
   const notes: NoteEntry[] = []
   const warnings: string[] = []
@@ -618,6 +724,25 @@ async function buildK3Noter(
   })
   if (materialiNote) notes.push(materialiNote)
 
+  // 3b. Anläggningstillgångar roll-forward (ÅRL 5:8 §). Required even under
+  // K3 — K3 ch.17 layers component depreciation on top, but the basic
+  // per-category roll-forward of anskaffningsvärde + ackumulerade
+  // avskrivningar is the statutory baseline.
+  const rollforwardNote = buildAnlaggningstillgangarNote({
+    noteNumber: notes.length + 1,
+    assets: assets.map((a) => ({
+      category: a.category,
+      acquisition_date: a.acquisition_date,
+      acquisition_cost: a.acquisition_cost,
+      salvage_value: a.salvage_value,
+      useful_life_months: a.useful_life_months,
+      disposed_at: a.disposed_at,
+    })),
+    periodStart: periodStartIso,
+    periodEnd: periodEndIso,
+  })
+  if (rollforwardNote) notes.push(rollforwardNote)
+
   // 4. Uppskjutna skatter. K3 ch.29 requires disclosure of opening,
   // movement, and closing balance of uppskjuten skatteskuld. We derive
   // these from the trial balance for 2240 (latent tax liability) and
@@ -657,35 +782,75 @@ async function buildK3Noter(
     )
   }
 
-  // 5. Medelantal anställda
-  const { count: employeeCount } = await supabase
+  // 5. Medelantal anställda — FTE-weighted average per ÅRL 5:20 §. The note is
+  // statutory for AB regardless of value (disclose "0" explicitly); for non-AB
+  // entities we still skip when there are no employees.
+  const { data: employeeRows } = await supabase
     .from('employees')
-    .select('id', { count: 'exact', head: true })
+    .select('employment_start, employment_end, employment_degree')
     .eq('company_id', companyId)
-    .eq('is_active', true)
-  if ((employeeCount ?? 0) > 0) {
+  const medelantal = computeMedelantalAnstallda(
+    (employeeRows ?? []) as Array<{
+      employment_start: string
+      employment_end: string | null
+      employment_degree: number
+    }>,
+    periodStartIso,
+    periodEndIso,
+  )
+  if (medelantal > 0 || entityType === 'aktiebolag') {
     notes.push({
       number: notes.length + 1,
       title: 'Medelantal anställda',
-      body: `Under räkenskapsåret har medeltalet anställda uppgått till ${employeeCount}.`,
+      body:
+        medelantal > 0
+          ? `Under räkenskapsåret har medeltalet anställda uppgått till ${medelantal}.`
+          : 'Bolaget har inte haft några anställda under räkenskapsåret.',
     })
   }
 
-  // 6. Eventualförpliktelser (K3 punkt 21 — separate disclosure).
+  // 6. Långfristiga skulder förfallande efter mer än fem år (ÅRL 5:13 §).
+  const longTermDebtAmount = narrative?.long_term_debt_over_five_years ?? null
+  notes.push({
+    number: notes.length + 1,
+    title: 'Långfristiga skulder',
+    body:
+      longTermDebtAmount && longTermDebtAmount > 0
+        ? `Av långfristiga skulder förfaller ${longTermDebtAmount.toLocaleString('sv-SE')} kr till betalning senare än fem år efter balansdagen.`
+        : 'Inga skulder förfaller till betalning senare än fem år efter balansdagen.',
+  })
+
+  // 7. Eventualförpliktelser (K3 punkt 21 — separate disclosure).
   notes.push({
     number: notes.length + 1,
     title: 'Eventualförpliktelser',
-    body: 'Inga.',
+    body: narrative?.contingent_liabilities?.trim() || 'Inga.',
   })
 
-  // 7. Ställda säkerheter
+  // 8. Ställda säkerheter (ÅRL 5:14 §).
   notes.push({
     number: notes.length + 1,
     title: 'Ställda säkerheter',
-    body: 'Inga.',
+    body: narrative?.securities_pledged?.trim() || 'Inga.',
   })
 
-  // 8. Väsentliga händelser efter balansdagen (K3 ch.32)
+  // 9. Koncernförhållanden (BFNAR 2012:1 kap. 8 — moderföretagets namn,
+  // organisationsnummer och säte). Emitted only when configured.
+  const parentName = narrative?.parent_company_name?.trim()
+  if (parentName) {
+    const parts: string[] = [`Moderföretag: ${parentName}.`]
+    if (narrative?.parent_company_org_number)
+      parts.push(`Organisationsnummer: ${narrative.parent_company_org_number}.`)
+    if (narrative?.parent_company_city)
+      parts.push(`Säte: ${narrative.parent_company_city}.`)
+    notes.push({
+      number: notes.length + 1,
+      title: 'Koncernförhållanden',
+      body: parts.join(' '),
+    })
+  }
+
+  // 10. Väsentliga händelser efter balansdagen (K3 ch.32)
   notes.push({
     number: notes.length + 1,
     title: 'Väsentliga händelser efter balansdagen',

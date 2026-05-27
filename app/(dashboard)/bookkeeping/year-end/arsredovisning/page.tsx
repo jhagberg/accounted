@@ -39,6 +39,20 @@ export default function ArsredovisningPage() {
   const [savedResultatdisposition, setSavedResultatdisposition] = useState('')
   const [agmDate, setAgmDate] = useState('')
   const [savedAgmDate, setSavedAgmDate] = useState('')
+  // Disclosure fields per ÅRL 5:13-15 § + BFNAR koncernförhållanden.
+  // Persisted via the same POST endpoint as the förvaltningsberättelse text.
+  const [longTermDebt, setLongTermDebt] = useState('')
+  const [savedLongTermDebt, setSavedLongTermDebt] = useState('')
+  const [securitiesPledged, setSecuritiesPledged] = useState('')
+  const [savedSecuritiesPledged, setSavedSecuritiesPledged] = useState('')
+  const [contingentLiabilities, setContingentLiabilities] = useState('')
+  const [savedContingentLiabilities, setSavedContingentLiabilities] = useState('')
+  const [parentName, setParentName] = useState('')
+  const [savedParentName, setSavedParentName] = useState('')
+  const [parentOrgNr, setParentOrgNr] = useState('')
+  const [savedParentOrgNr, setSavedParentOrgNr] = useState('')
+  const [parentCity, setParentCity] = useState('')
+  const [savedParentCity, setSavedParentCity] = useState('')
   const [savingNarrative, setSavingNarrative] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
@@ -75,6 +89,20 @@ export default function ArsredovisningPage() {
         setSavedImportantEvents(d.forvaltningsberattelse.important_events)
         setSavedResultatdisposition(d.forvaltningsberattelse.resultatdisposition)
         setSavedAgmDate(d.forvaltningsberattelse.agm_date ?? '')
+        const ltd = d.disclosures.long_term_debt_over_five_years
+        const ltdStr = ltd != null ? String(ltd) : ''
+        setLongTermDebt(ltdStr)
+        setSavedLongTermDebt(ltdStr)
+        setSecuritiesPledged(d.disclosures.securities_pledged ?? '')
+        setSavedSecuritiesPledged(d.disclosures.securities_pledged ?? '')
+        setContingentLiabilities(d.disclosures.contingent_liabilities ?? '')
+        setSavedContingentLiabilities(d.disclosures.contingent_liabilities ?? '')
+        setParentName(d.disclosures.parent_company_name ?? '')
+        setSavedParentName(d.disclosures.parent_company_name ?? '')
+        setParentOrgNr(d.disclosures.parent_company_org_number ?? '')
+        setSavedParentOrgNr(d.disclosures.parent_company_org_number ?? '')
+        setParentCity(d.disclosures.parent_company_city ?? '')
+        setSavedParentCity(d.disclosures.parent_company_city ?? '')
         setSignatures((sigBody.data ?? []) as SignatureRequest[])
       })
       .catch(() => {
@@ -92,10 +120,33 @@ export default function ArsredovisningPage() {
     description !== savedDescription ||
     importantEvents !== savedImportantEvents ||
     resultatdisposition !== savedResultatdisposition ||
-    agmDate !== savedAgmDate
+    agmDate !== savedAgmDate ||
+    longTermDebt !== savedLongTermDebt ||
+    securitiesPledged !== savedSecuritiesPledged ||
+    contingentLiabilities !== savedContingentLiabilities ||
+    parentName !== savedParentName ||
+    parentOrgNr !== savedParentOrgNr ||
+    parentCity !== savedParentCity
 
   const handleSaveNarrative = useCallback(async () => {
     if (!periodId) return
+    // Parse the long-term debt input; empty string and zero both clear the
+    // override (the note then falls back to the "Inga." default). Reject
+    // non-numeric input with a toast so the API doesn't return a 400.
+    let longTermDebtParsed: number | null = null
+    if (longTermDebt.trim()) {
+      const parsed = Number(longTermDebt.replace(',', '.'))
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        toast({
+          title: 'Ogiltigt belopp',
+          description:
+            'Långfristiga skulder förfallande efter mer än fem år måste vara ett positivt tal (eller lämnas tomt).',
+          variant: 'destructive',
+        })
+        return
+      }
+      longTermDebtParsed = parsed
+    }
     setSavingNarrative(true)
     try {
       const res = await fetch(
@@ -108,6 +159,12 @@ export default function ArsredovisningPage() {
             important_events: importantEvents,
             resultatdisposition,
             agm_date: agmDate || null,
+            long_term_debt_over_five_years: longTermDebtParsed,
+            securities_pledged: securitiesPledged.trim() || null,
+            contingent_liabilities: contingentLiabilities.trim() || null,
+            parent_company_name: parentName.trim() || null,
+            parent_company_org_number: parentOrgNr.trim() || null,
+            parent_company_city: parentCity.trim() || null,
           }),
         },
       )
@@ -124,6 +181,12 @@ export default function ArsredovisningPage() {
       setSavedImportantEvents(importantEvents)
       setSavedResultatdisposition(resultatdisposition)
       setSavedAgmDate(agmDate)
+      setSavedLongTermDebt(longTermDebt)
+      setSavedSecuritiesPledged(securitiesPledged)
+      setSavedContingentLiabilities(contingentLiabilities)
+      setSavedParentName(parentName)
+      setSavedParentOrgNr(parentOrgNr)
+      setSavedParentCity(parentCity)
       setSavedAt(Date.now())
     } catch (err) {
       toast({
@@ -134,7 +197,20 @@ export default function ArsredovisningPage() {
     } finally {
       setSavingNarrative(false)
     }
-  }, [periodId, description, importantEvents, resultatdisposition, agmDate, toast])
+  }, [
+    periodId,
+    description,
+    importantEvents,
+    resultatdisposition,
+    agmDate,
+    longTermDebt,
+    securitiesPledged,
+    contingentLiabilities,
+    parentName,
+    parentOrgNr,
+    parentCity,
+    toast,
+  ])
 
   const handleMarkSigned = useCallback(
     async (signatureId: string) => {
@@ -352,6 +428,93 @@ export default function ArsredovisningPage() {
               fastställelseintyget i PDF:en (krävs för inlämning till Bolagsverket).
             </p>
           </div>
+
+          <div className="pt-4 border-t border-border space-y-4">
+            <div>
+              <h3 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                Lagstadgade upplysningar
+              </h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Noter som krävs enligt ÅRL men inte kan härledas automatiskt. Tomma
+                fält visas som &quot;Inga.&quot; i PDF:en.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ar-ltd">
+                Långfristiga skulder förfallande efter mer än fem år (kr)
+              </Label>
+              <Input
+                id="ar-ltd"
+                type="text"
+                inputMode="decimal"
+                value={longTermDebt}
+                onChange={(e) => setLongTermDebt(e.target.value)}
+                placeholder="0"
+                className="max-w-[220px] tabular-nums"
+              />
+              <p className="text-xs text-muted-foreground">
+                ÅRL 5:13 §. Lämna tomt om inga skulder förfaller senare än fem år.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ar-securities">Ställda säkerheter</Label>
+              <Textarea
+                id="ar-securities"
+                value={securitiesPledged}
+                onChange={(e) => setSecuritiesPledged(e.target.value)}
+                rows={2}
+                placeholder="t.ex. Företagsinteckning 500 000 kr som säkerhet för bankkredit."
+              />
+              <p className="text-xs text-muted-foreground">ÅRL 5:14 §.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ar-contingent">Eventualförpliktelser</Label>
+              <Textarea
+                id="ar-contingent"
+                value={contingentLiabilities}
+                onChange={(e) => setContingentLiabilities(e.target.value)}
+                rows={2}
+                placeholder="t.ex. Borgensåtagande för dotterbolags krediter 200 000 kr."
+              />
+              <p className="text-xs text-muted-foreground">ÅRL 5:15 §.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ar-parent-name">
+                Moderföretag — namn (om koncerntillhörighet)
+              </Label>
+              <Input
+                id="ar-parent-name"
+                value={parentName}
+                onChange={(e) => setParentName(e.target.value)}
+                placeholder="t.ex. AB Koncernholding"
+              />
+              <p className="text-xs text-muted-foreground">
+                BFNAR 2016:10 kap. 19 / BFNAR 2012:1 kap. 8. Lämna tomt om bolaget
+                inte ingår i en koncern — noten utelämnas då.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="ar-parent-orgnr">Moderföretagets org.nr</Label>
+                <Input
+                  id="ar-parent-orgnr"
+                  value={parentOrgNr}
+                  onChange={(e) => setParentOrgNr(e.target.value)}
+                  placeholder="556677-8899"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ar-parent-city">Moderföretagets säte</Label>
+                <Input
+                  id="ar-parent-city"
+                  value={parentCity}
+                  onChange={(e) => setParentCity(e.target.value)}
+                  placeholder="Stockholm"
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center justify-between pt-2">
             <div className="text-xs text-muted-foreground">
               {hasUnsavedNarrative ? (

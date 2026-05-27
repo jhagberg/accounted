@@ -71,6 +71,7 @@ const LABELS = {
     // Proforma / exempt
     proformaNotice: 'Detta är en proformafaktura och utgör ingen betalningsanmodan.',
     exemptNotice: 'Undantag från skatteplikt, ML 3 kap.',
+    notVatRegisteredNotice: 'Företaget är inte momsregistrerat. Mervärdesskatt redovisas ej.',
     // Payment
     paymentHeading: 'Betalningsinformation',
     bank: 'Bank:',
@@ -134,6 +135,7 @@ const LABELS = {
     totalInSek: 'Total in SEK:',
     proformaNotice: 'This is a proforma invoice and is not a request for payment.',
     exemptNotice: 'Exempt from VAT (ML 3 kap. — Swedish VAT Act).',
+    notVatRegisteredNotice: 'The seller is not VAT-registered. No VAT is charged on this invoice.',
     paymentHeading: 'Payment information',
     bank: 'Bank:',
     account: 'Account number:',
@@ -781,10 +783,22 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
               {customer.country && customer.country !== 'SE' && (
                 <Text>{customer.country}</Text>
               )}
-              {customer.org_number && (
+              {/* Suppress the identifier row for private customers — their
+                  personnummer is not required on a B2C invoice (ML 17 kap 24§
+                  asks for name + address only) and printing it is a GDPR
+                  data-minimization regression. ROT/RUT-avdrag invoices surface
+                  the masked personnummer in the dedicated deductionBox below
+                  when Skatteverket needs it. */}
+              {customer.customer_type !== 'individual' && customer.org_number && (
                 <Text style={{ marginTop: 6 }}>{L.orgNo} {customer.org_number}</Text>
               )}
-              {customer.vat_number && <Text>{L.vat} {customer.vat_number}</Text>}
+              {/* Same data-minimisation guard as org_number above — for a
+                  private customer a VAT number functions as a personal tax
+                  identifier in some EU jurisdictions and is not required by
+                  ML 17 kap 24§ on a B2C invoice. */}
+              {customer.customer_type !== 'individual' && customer.vat_number && (
+                <Text>{L.vat} {customer.vat_number}</Text>
+              )}
             </View>
           </View>
         </View>
@@ -854,10 +868,17 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
                   </View>
                 ))
             ) : (
-              <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>{L.vatRow(invoice.vat_rate ?? (vatByRate.size === 1 ? (vatByRate.keys().next().value ?? 0) : 0))}</Text>
-                <Text style={styles.totalValue}>{formatCurrency(invoice.vat_amount, invoice.currency, lang)}</Text>
-              </View>
+              // Suppress the "Moms 0%" row entirely when the seller is not
+              // VAT-registered. ML 1 kap. 1§ — a non-skattskyldig may not
+              // charge output VAT, so a "Moms 0%" line would imply VAT
+              // accounting that doesn't exist. The notice block below the
+              // payment section explains the absence of VAT.
+              !(company.vat_registered === false && invoice.vat_amount === 0) && (
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>{L.vatRow(invoice.vat_rate ?? (vatByRate.size === 1 ? (vatByRate.keys().next().value ?? 0) : 0))}</Text>
+                  <Text style={styles.totalValue}>{formatCurrency(invoice.vat_amount, invoice.currency, lang)}</Text>
+                </View>
+              )
             )}
             {(() => {
               const rounding = getDisplayTotal(invoice, company)
@@ -1041,16 +1062,31 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
           </View>
         )}
 
-        {/* Reverse charge / export / exempt notice */}
-        {invoice.reverse_charge_text && (
+        {/* Reverse charge / export / exempt / not-registered notice.
+            "Not VAT-registered" trumps the others — when the seller is
+            outside the VAT system entirely (vat_registered=false in
+            company_settings), reverse-charge and ML 3 kap. exempt notices
+            don't apply, and a single dedicated notice is clearer for the
+            customer than reusing the exempt notice (which implies the sale
+            specifically is exempt while the seller is otherwise within the
+            VAT system). */}
+        {company.vat_registered === false ? (
           <View style={styles.reverseChargeBox}>
-            <Text style={styles.reverseChargeText}>{invoice.reverse_charge_text}</Text>
+            <Text style={styles.reverseChargeText}>{L.notVatRegisteredNotice}</Text>
           </View>
-        )}
-        {invoice.vat_treatment === 'exempt' && !invoice.reverse_charge_text && (
-          <View style={styles.reverseChargeBox}>
-            <Text style={styles.reverseChargeText}>{L.exemptNotice}</Text>
-          </View>
+        ) : (
+          <>
+            {invoice.reverse_charge_text && (
+              <View style={styles.reverseChargeBox}>
+                <Text style={styles.reverseChargeText}>{invoice.reverse_charge_text}</Text>
+              </View>
+            )}
+            {invoice.vat_treatment === 'exempt' && !invoice.reverse_charge_text && (
+              <View style={styles.reverseChargeBox}>
+                <Text style={styles.reverseChargeText}>{L.exemptNotice}</Text>
+              </View>
+            )}
+          </>
         )}
 
         {/* Notes */}
