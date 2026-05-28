@@ -13,6 +13,8 @@ import DocumentUploadZone from '@/components/bookkeeping/DocumentUploadZone'
 import type { UploadedFile } from '@/components/bookkeeping/DocumentUploadZone'
 import type { FormLine } from '@/components/bookkeeping/JournalEntryForm'
 import { resolveSekAmount, buildCurrencyMetadata } from '@/lib/bookkeeping/currency-utils'
+import { applyTemplate } from '@/lib/bookkeeping/template-library'
+import type { BookingTemplateLibrary } from '@/types'
 import type { TransactionWithInvoice } from './transaction-types'
 
 interface TransactionBookingDialogProps {
@@ -20,6 +22,7 @@ interface TransactionBookingDialogProps {
   onOpenChange: (open: boolean) => void
   transaction: TransactionWithInvoice | null
   onBooked: (transactionId: string, journalEntryId: string) => void
+  preselectedTemplate?: BookingTemplateLibrary | null
 }
 
 function buildInitialLines(transaction: TransactionWithInvoice, bankLineDescription: string): FormLine[] {
@@ -59,11 +62,41 @@ function buildInitialLines(transaction: TransactionWithInvoice, bankLineDescript
   return isExpense ? [bankLine, counterLine] : [bankLine, counterLine]
 }
 
+function buildInitialLinesFromTemplate(
+  transaction: TransactionWithInvoice,
+  template: BookingTemplateLibrary,
+): FormLine[] {
+  const sekAmount = Math.round(Math.abs(resolveSekAmount(
+    transaction.amount,
+    transaction.amount_sek,
+    transaction.currency,
+    transaction.exchange_rate
+  )) * 100) / 100
+  const lines = applyTemplate(template.lines, sekAmount)
+
+  // Match buildInitialLines's foreign-currency handling: attach original
+  // currency/amount/exchange_rate metadata to the settlement (bank/cash) legs
+  // so the journal entry retains the foreign-currency annotation. Without
+  // this the entry is silently recorded in SEK only.
+  const isForeign = !!transaction.currency && transaction.currency !== 'SEK'
+  if (!isForeign) return lines
+  const currencyMeta = buildCurrencyMetadata(
+    transaction.currency,
+    Math.abs(transaction.amount),
+    transaction.exchange_rate
+  )
+  return lines.map((line, i) => {
+    const raw = template.lines[i]
+    return raw?.type === 'settlement' ? { ...line, ...currencyMeta } : line
+  })
+}
+
 export default function TransactionBookingDialog({
   open,
   onOpenChange,
   transaction,
   onBooked,
+  preselectedTemplate,
 }: TransactionBookingDialogProps) {
   const t = useTranslations('tx_booking_dialog')
   const { toast } = useToast()
@@ -179,9 +212,13 @@ export default function TransactionBookingDialog({
         </div>
 
         <JournalEntryForm
-          key={transaction.id}
+          key={`${transaction.id}-${preselectedTemplate?.id ?? 'default'}`}
           embedded
-          initialLines={buildInitialLines(transaction, t('bank_line_description'))}
+          initialLines={
+            preselectedTemplate
+              ? buildInitialLinesFromTemplate(transaction, preselectedTemplate)
+              : buildInitialLines(transaction, t('bank_line_description'))
+          }
           initialDate={transaction.date}
           initialDescription={transaction.description}
           submitUrl={`/api/transactions/${transaction.id}/book`}

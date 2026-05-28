@@ -714,4 +714,40 @@ describe('POST /api/transactions/[id]/categorize', () => {
     // had to enqueue a response for it. The absence of an enqueue here plus
     // the 400 status is the assertion that the route did not fall through.
   })
+
+  // The transactions page surfaces TX_CATEGORIZE_INVALID_ACCOUNT with an
+  // inline "Aktivera och bokför" toast and reads details.accountNumber to
+  // call POST /accounts/activate. This test pins the error shape that flow
+  // depends on — if the field name changes the recovery UI silently breaks.
+  it('returns 400 TX_CATEGORIZE_INVALID_ACCOUNT with details.accountNumber when account_override is not in the chart', async () => {
+    const tx = makeTransaction({
+      id: 'tx-1',
+      amount: -869.25,
+      merchant_name: 'Paddle',
+      journal_entry_id: null,
+    })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: { entity_type: 'enskild_firma', fiscal_year_start_month: 1 }, error: null })
+    // chart_of_accounts lookup for '5420' — not in the company's chart.
+    // Using a plain expense account (Programvaror) avoids the implication
+    // that 4535 (Inköp av varor från annat EU-land, reverse-charge) would
+    // be a valid override on a domestic transaction without its paired
+    // moms legs (2614/2645) — see the Swedish compliance review note.
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: { is_business: true, category: 'expense_software', account_override: '5420' },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; details: { accountNumber?: string } }
+    }>(response)
+
+    expect(status).toBe(400)
+    expect(body.error.code).toBe('TX_CATEGORIZE_INVALID_ACCOUNT')
+    expect(body.error.details.accountNumber).toBe('5420')
+    expect(mockCreateTransactionJournalEntry).not.toHaveBeenCalled()
+  })
 })

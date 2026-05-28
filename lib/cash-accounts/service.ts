@@ -142,6 +142,57 @@ export async function upsertFromPsd2(
     source: 'enable_banking' as CashAccountSource,
   }
 
+  // create_company_with_owner and the seed_default_cash_account migration plant
+  // a manual (bank_connection_id IS NULL) row on the same ledger_account so
+  // reconciliation routes work before any PSD2 connection exists. The first
+  // PSD2 sync for that BAS slot has to promote that row in place — a plain
+  // upsert on (company_id, bank_connection_id, external_uid) wouldn't match it
+  // (NULL ≠ NULL) and the INSERT path then trips the (company_id,
+  // ledger_account) UNIQUE constraint.
+  const { data: seedRow, error: seedLookupError } = await supabase
+    .from('cash_accounts')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('ledger_account', input.ledger_account)
+    .is('bank_connection_id', null)
+    .maybeSingle()
+
+  if (seedLookupError) {
+    log.error('upsertFromPsd2 seed lookup failed', {
+      companyId,
+      bankConnectionId: input.bank_connection_id,
+      externalUid: input.external_uid,
+      error: seedLookupError.message,
+    })
+    throw new Error(`cash_accounts upsert failed: ${seedLookupError.message}`)
+  }
+
+  if (seedRow) {
+    // .select() so we can detect a 0-row UPDATE — Supabase's update().eq() returns
+    // { error: null, data: [] } if the row was deleted between the SELECT above
+    // and this UPDATE (rare but theoretically possible under concurrent ops).
+    // If that happens, fall through to the normal upsert path instead of
+    // silently returning success without persisting anything.
+    const { data: promoted, error: promoteError } = await supabase
+      .from('cash_accounts')
+      .update(payload)
+      .eq('id', seedRow.id)
+      .select('id')
+    if (promoteError) {
+      log.error('upsertFromPsd2 promote-seed failed', {
+        companyId,
+        bankConnectionId: input.bank_connection_id,
+        externalUid: input.external_uid,
+        error: promoteError.message,
+      })
+      throw new Error(`cash_accounts upsert failed: ${promoteError.message}`)
+    }
+    if (promoted && promoted.length > 0) {
+      return
+    }
+    // Seed row vanished between SELECT and UPDATE — fall through to upsert.
+  }
+
   const { error } = await supabase
     .from('cash_accounts')
     .upsert(payload, { onConflict: 'company_id,bank_connection_id,external_uid' })

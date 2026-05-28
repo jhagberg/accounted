@@ -1769,7 +1769,8 @@
     "previous_counterparties": "Tidigare motparter",
     "suggested": "Föreslagna",
     "common_templates": "Vanliga mallar",
-    "more_templates": "Fler mallar ({count})"
+    "more_templates": "Fler mallar ({count})",
+    "opens_editor_badge": "Öppnar bokföringsformulär"
   },
   "tx_invoice_match": {
     "title_supplier": "Bekräfta leverantörsfakturamatchning",

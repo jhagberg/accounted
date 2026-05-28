@@ -200,4 +200,48 @@ describe('convertLibraryToBookingTemplate', () => {
     const tpl = makeLibraryTemplate([], { lines: null as unknown as BookingTemplateLibraryLine[] })
     expect(convertLibraryToBookingTemplate(tpl)).toBeNull()
   })
+
+  // Real-world shape from before the editor defaulted new lines to 'vat': users
+  // would tap "add line" twice and end up with three lines all typed 'business'
+  // (the dropdown default at the time). The converter rightly rejects this;
+  // the transaction picker now still surfaces these templates and routes the
+  // click to the manual booking editor instead of hiding them.
+  it('returns null when every line is typed "business" (pre-#589 default)', () => {
+    const tpl = makeLibraryTemplate([
+      { account: '5420', label: 'Programvara', side: 'debit', type: 'business', ratio: 1 },
+      { account: '2640', label: 'Ingående moms', side: 'debit', type: 'business', ratio: 0.25 },
+      { account: '1930', label: 'Företagskonto', side: 'credit', type: 'business', ratio: 1 },
+    ])
+    expect(convertLibraryToBookingTemplate(tpl)).toBeNull()
+  })
+})
+
+describe('applyTemplate on shapes the converter rejects', () => {
+  // The transaction picker's fallback for unconvertible templates is to open
+  // the manual booking dialog with initialLines = applyTemplate(raw.lines, |amount|).
+  // These tests pin that path: even when the shape is too rich for the simple
+  // debit/credit summary, applyTemplate still produces a usable FormLine[].
+  it('still produces lines for a split-expense template (two business legs)', () => {
+    const lines: BookingTemplateLibraryLine[] = [
+      { account: '5420', label: 'Programvara', side: 'debit', type: 'business', ratio: 0.7 },
+      { account: '6991', label: 'Övrigt', side: 'debit', type: 'business', ratio: 0.3 },
+      { account: '1930', label: 'Företagskonto', side: 'credit', type: 'settlement', ratio: 1 },
+    ]
+    const result = applyTemplate(lines, 1000)
+    expect(result).toHaveLength(3)
+    expect(result[0].debit_amount).toBe('700.00')
+    expect(result[1].debit_amount).toBe('300.00')
+    expect(result[2].credit_amount).toBe('1000.00')
+  })
+
+  it('still produces lines when every leg is typed "business"', () => {
+    const lines: BookingTemplateLibraryLine[] = [
+      { account: '5420', label: 'Programvara', side: 'debit', type: 'business', ratio: 1 },
+      { account: '1930', label: 'Företagskonto', side: 'credit', type: 'business', ratio: 1 },
+    ]
+    const result = applyTemplate(lines, 250)
+    expect(result).toHaveLength(2)
+    expect(result[0].debit_amount).toBe('250.00')
+    expect(result[1].credit_amount).toBe('250.00')
+  })
 })

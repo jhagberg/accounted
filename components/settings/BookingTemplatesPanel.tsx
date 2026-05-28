@@ -490,59 +490,63 @@ function CreateTemplateForm({ onCreated, entityLabels }: { onCreated: () => void
         <Label>{t('lines_label')}</Label>
         <div className="space-y-2 mt-1">
           {lines.map((line, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <Input
-                value={line.account}
-                onChange={(e) => updateLine(i, 'account', e.target.value.replace(/\D/g, '').slice(0, 4))}
-                placeholder={t('account_placeholder')}
-                className="w-20 font-mono"
-                maxLength={4}
-              />
-              <Input
-                value={line.label}
-                onChange={(e) => updateLine(i, 'label', e.target.value)}
-                placeholder={t('description_short_placeholder')}
-                className="flex-1"
-              />
-              <Select value={line.side} onValueChange={(v) => updateLine(i, 'side', v)}>
-                <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="debit">{t('debit_label')}</SelectItem>
-                  <SelectItem value="credit">{t('credit_label')}</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={line.type} onValueChange={(v) => updateLineType(i, v as BookingTemplateLibraryLine['type'])}>
-                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="business">{t('type_cost')}</SelectItem>
-                  <SelectItem value="vat">{t('type_vat')}</SelectItem>
-                  <SelectItem value="settlement">{t('type_settlement')}</SelectItem>
-                </SelectContent>
-              </Select>
-              {line.type === 'vat' && (
-                <Select
-                  value={String(line.vat_rate ?? 0.25)}
-                  onValueChange={(v) => updateLine(i, 'vat_rate', Number(v))}
+            <div key={i} className="rounded-md border border-border p-2 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={line.account}
+                  onChange={(e) => updateLine(i, 'account', e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  placeholder={t('account_placeholder')}
+                  className="w-20 font-mono"
+                  maxLength={4}
+                />
+                <Input
+                  value={line.label}
+                  onChange={(e) => updateLine(i, 'label', e.target.value)}
+                  placeholder={t('description_short_placeholder')}
+                  className="flex-1 min-w-0"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeLine(i)}
+                  disabled={lines.length <= 2}
+                  className="h-8 w-8 p-0 shrink-0"
                 >
-                  <SelectTrigger className="w-20" aria-label={t('vat_rate_label')}><SelectValue /></SelectTrigger>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Select value={line.side} onValueChange={(v) => updateLine(i, 'side', v)}>
+                  <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="0.25">{t('vat_rate_25')}</SelectItem>
-                    <SelectItem value="0.12">{t('vat_rate_12')}</SelectItem>
-                    <SelectItem value="0.06">{t('vat_rate_6')}</SelectItem>
-                    <SelectItem value="0">{t('vat_rate_0')}</SelectItem>
+                    <SelectItem value="debit">{t('debit_label')}</SelectItem>
+                    <SelectItem value="credit">{t('credit_label')}</SelectItem>
                   </SelectContent>
                 </Select>
-              )}
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => removeLine(i)}
-                disabled={lines.length <= 2}
-                className="h-8 w-8 p-0 shrink-0"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
+                <Select value={line.type} onValueChange={(v) => updateLineType(i, v as BookingTemplateLibraryLine['type'])}>
+                  <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="business">{t('type_cost')}</SelectItem>
+                    <SelectItem value="vat">{t('type_vat')}</SelectItem>
+                    <SelectItem value="settlement">{t('type_settlement')}</SelectItem>
+                  </SelectContent>
+                </Select>
+                {line.type === 'vat' && (
+                  <Select
+                    value={String(line.vat_rate ?? 0.25)}
+                    onValueChange={(v) => updateLine(i, 'vat_rate', Number(v))}
+                  >
+                    <SelectTrigger className="w-24" aria-label={t('vat_rate_label')}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0.25">{t('vat_rate_25')}</SelectItem>
+                      <SelectItem value="0.12">{t('vat_rate_12')}</SelectItem>
+                      <SelectItem value="0.06">{t('vat_rate_6')}</SelectItem>
+                      <SelectItem value="0">{t('vat_rate_0')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
             </div>
           ))}
           <Button type="button" variant="outline" size="sm" onClick={addLine}>

@@ -1769,7 +1769,8 @@
     "previous_counterparties": "Previous counterparties",
     "suggested": "Suggested",
     "common_templates": "Common templates",
-    "more_templates": "More templates ({count})"
+    "more_templates": "More templates ({count})",
+    "opens_editor_badge": "Opens journal editor"
   },
   "tx_invoice_match": {
     "title_supplier": "Confirm supplier invoice match",

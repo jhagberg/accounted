@@ -50,7 +50,7 @@ import { findBankSkvCounterparts } from '@/lib/skatteverket/bank-counterpart'
 import { useCompany } from '@/contexts/CompanyContext'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, SupplierInvoice, Supplier, VatTreatment, EntityType, LinePatternEntry } from '@/types'
+import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, SupplierInvoice, Supplier, VatTreatment, EntityType, LinePatternEntry, BookingTemplateLibrary } from '@/types'
 import type { SuggestedTemplate } from '@/lib/transactions/category-suggestions'
 
 type InvoiceWithCustomer = Invoice & { customer?: Customer }
@@ -109,6 +109,7 @@ export default function TransactionsPage() {
   // Booking dialog (journal entry form)
   const [bookingDialogOpen, setBookingDialogOpen] = useState(false)
   const [bookingDialogTransaction, setBookingDialogTransaction] = useState<TransactionWithInvoice | null>(null)
+  const [bookingDialogTemplate, setBookingDialogTemplate] = useState<BookingTemplateLibrary | null>(null)
 
   // Template picker dialog
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
@@ -537,6 +538,78 @@ export default function TransactionsPage() {
             transactionId: id,
             retry: () => runCategorize({ ...args, confirmNoMatch: true }),
             candidates: result.error.details.candidates,
+          })
+          setProcessingId(null)
+          return null
+        }
+        if (result?.error?.code === 'TX_CATEGORIZE_INVALID_ACCOUNT') {
+          // The user picked a library template (or typed an account
+          // override) whose account isn't in this company's kontoplan.
+          // Mirror the ACCOUNTS_NOT_IN_CHART flow with a one-click
+          // "Aktivera och bokför" — pull the BAS name if known so the
+          // toast carries real context.
+          // Validate the BAS account number is a plain 4-digit string before
+          // embedding it in any fetch URL/body — the value comes from the
+          // server error envelope but defense-in-depth.
+          const rawAccountNumber: unknown = result.error.details?.accountNumber
+          const accountNumber: string | undefined =
+            typeof rawAccountNumber === 'string' && /^\d{4}$/.test(rawAccountNumber)
+              ? rawAccountNumber
+              : undefined
+          let displayName = accountNumber ?? ''
+          if (accountNumber) {
+            try {
+              const lookupRes = await fetch(`/api/bookkeeping/accounts/bas-lookup?numbers=${encodeURIComponent(accountNumber)}`)
+              if (lookupRes.ok) {
+                const lookup = await lookupRes.json() as { data?: Array<{ account_number: string; account_name: string | null; known?: boolean }> }
+                const hit = lookup.data?.find((r) => r.account_number === accountNumber)
+                if (hit?.account_name) displayName = `${accountNumber} — ${hit.account_name}`
+              }
+            } catch { /* fall through to the plain number */ }
+          }
+          let invalidAccountActivateInFlight = false
+          toast({
+            title: 'Kontot finns inte i din kontoplan',
+            description: accountNumber
+              ? `Kontot ${displayName} är inte aktiverat.`
+              : 'Kontot är inte aktiverat.',
+            variant: 'destructive',
+            action: accountNumber ? (
+              <ToastAction altText="Aktivera och bokför" onClick={async () => {
+                if (invalidAccountActivateInFlight) return
+                invalidAccountActivateInFlight = true
+                try {
+                  const activateRes = await fetch('/api/bookkeeping/accounts/activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_numbers: [accountNumber] }),
+                  })
+                  if (!activateRes.ok) {
+                    const errBody = await activateRes.json().catch(() => null)
+                    toast({
+                      title: 'Kunde inte aktivera kontot',
+                      description: getErrorMessage(errBody, { statusCode: activateRes.status }),
+                      variant: 'destructive',
+                    })
+                    return
+                  }
+                  const activateBody = await activateRes.json()
+                  if (Array.isArray(activateBody.unknown) && activateBody.unknown.length > 0) {
+                    toast({
+                      title: 'Kontot finns inte i BAS-planen',
+                      description: `Lägg till ${accountNumber} manuellt under Inställningar → Kontoplan.`,
+                      variant: 'destructive',
+                    })
+                    return
+                  }
+                  await runCategorize(args)
+                } finally {
+                  invalidAccountActivateInFlight = false
+                }
+              }}>
+                Aktivera och bokför
+              </ToastAction>
+            ) : undefined,
           })
           setProcessingId(null)
           return null
@@ -1240,6 +1313,7 @@ export default function TransactionsPage() {
     }, 350)
     setBookingDialogOpen(false)
     setBookingDialogTransaction(null)
+    setBookingDialogTemplate(null)
     toast({ title: 'Bokförd' })
   }
 
@@ -1392,8 +1466,20 @@ export default function TransactionsPage() {
     setTemplatePickerOpen(false)
     if (templatePickerTransaction) {
       setBookingDialogTransaction(templatePickerTransaction)
+      setBookingDialogTemplate(null)
       setBookingDialogOpen(true)
     }
+  }
+
+  // Complex (multi-leg or otherwise non-convertible) library template picked
+  // from the transaction modal — route into the manual booking dialog with
+  // the template pre-applied against the transaction's amount.
+  function handlePickLibraryTemplate(raw: BookingTemplateLibrary) {
+    if (!templatePickerTransaction) return
+    setBookingDialogTransaction(templatePickerTransaction)
+    setBookingDialogTemplate(raw)
+    setTemplatePickerOpen(false)
+    setBookingDialogOpen(true)
   }
 
   async function handleQuickReviewConfirm(
@@ -1714,8 +1800,12 @@ export default function TransactionsPage() {
 
       <TransactionBookingDialog
         open={bookingDialogOpen}
-        onOpenChange={setBookingDialogOpen}
+        onOpenChange={(o) => {
+          setBookingDialogOpen(o)
+          if (!o) setBookingDialogTemplate(null)
+        }}
         transaction={bookingDialogTransaction}
+        preselectedTemplate={bookingDialogTemplate}
         onBooked={handleTransactionBooked}
       />
 
@@ -1767,6 +1857,7 @@ export default function TransactionsPage() {
               setTemplatePickerOpen(false)
               handleOpenTemplateReview(templatePickerTransaction, templateId)
             }}
+            onPickLibraryTemplate={handlePickLibraryTemplate}
           />
         </DialogContent>
       </Dialog>

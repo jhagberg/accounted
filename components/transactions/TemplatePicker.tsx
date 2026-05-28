@@ -77,6 +77,73 @@ interface TemplateCardProps {
   compact?: boolean
 }
 
+interface LibraryTemplateCardProps {
+  raw: BookingTemplateLibrary
+  converted: BookingTemplate | null
+  selected: boolean
+  onClick: () => void
+}
+
+function LibraryTemplateCard({ raw, converted, selected, onClick }: LibraryTemplateCardProps) {
+  const t = useTranslations('tx_template_picker')
+  // Convertible templates render the familiar two-account summary; complex
+  // ones list the business legs (the cost/revenue accounts) so the user can
+  // recognise the template at a glance, and carry an "opens editor" badge.
+  const businessLines = raw.lines.filter((l) => l.type === 'business')
+  const vatLabelKey = converted ? getVatLabelKey(converted) : null
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full text-left rounded-lg border px-3 py-2.5 transition-colors hover:bg-muted/50 ${
+        selected
+          ? 'border-primary bg-primary/5 ring-1 ring-primary'
+          : 'border-border'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-sm leading-tight">{raw.name}</p>
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            {converted ? (
+              <span className="text-xs font-mono text-muted-foreground">
+                D: {formatAccountWithName(converted.debit_account)} &middot; K: {formatAccountWithName(converted.credit_account)}
+              </span>
+            ) : (
+              <span className="text-xs font-mono text-muted-foreground">
+                {businessLines.slice(0, 2).map((l) => formatAccountWithName(l.account)).join(' · ') || raw.lines.map((l) => l.account).slice(0, 2).join(' · ')}
+              </span>
+            )}
+            {vatLabelKey && (
+              <Badge
+                variant="secondary"
+                className={`text-[10px] px-1.5 py-0 ${
+                  converted?.vat_treatment === 'reverse_charge'
+                    ? 'bg-warning/10 text-warning-foreground'
+                    : ''
+                }`}
+              >
+                {t(vatLabelKey)}
+              </Badge>
+            )}
+            {!converted && (
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                {t('opens_editor_badge')}
+              </Badge>
+            )}
+          </div>
+        </div>
+      </div>
+      {raw.description && (
+        <p className="text-[11px] text-muted-foreground mt-1.5 leading-snug">
+          {raw.description}
+        </p>
+      )}
+    </button>
+  )
+}
+
 function TemplateCard({ template, selected, onClick, compact }: TemplateCardProps) {
   const t = useTranslations('tx_template_picker')
   const vatLabelKey = getVatLabelKey(template)
@@ -140,6 +207,7 @@ interface TemplatePickerProps {
   recentTemplateIds?: string[]
   onSelect: (template: BookingTemplate) => void
   onSelectCounterparty?: (templateId: string) => void
+  onPickLibraryTemplate?: (raw: BookingTemplateLibrary) => void
   selectedTemplateId?: string
 }
 
@@ -149,19 +217,25 @@ export default function TemplatePicker({
   suggestedTemplates,
   onSelect,
   onSelectCounterparty,
+  onPickLibraryTemplate,
   selectedTemplateId,
 }: TemplatePickerProps) {
   const t = useTranslations('tx_template_picker')
   const [searchQuery, setSearchQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
-  const [libraryTemplates, setLibraryTemplates] = useState<BookingTemplate[]>([])
+  const [libraryRaw, setLibraryRaw] = useState<BookingTemplateLibrary[]>([])
 
-  // Map direction to template direction filter (transfers show in both)
+  // Map direction to template direction filter (transfers show in both).
+  // Direction filtering applies only to the static "Vanliga mallar" list —
+  // user-created library templates ignore it (inferred direction is unreliable
+  // and users know what they made).
   const templateDirection = direction === 'income' ? 'income' : 'expense'
 
-  // Fetch user-created booking templates (company + team scope) and map
-  // convertible ones into BookingTemplate shape. System templates are
-  // already covered by the static list below, so we exclude them here.
+  // Fetch the user's library templates (company + team scope). We keep them
+  // in their raw shape so we can render every template, even ones that don't
+  // fit convertLibraryToBookingTemplate's simple 2-account contract — those
+  // get routed through the manual booking dialog instead of the QuickReview
+  // single-account path.
   useEffect(() => {
     const controller = new AbortController()
     ;(async () => {
@@ -170,17 +244,23 @@ export default function TemplatePicker({
         if (!res.ok) return
         const { data } = await res.json() as { data?: BookingTemplateLibrary[] }
         if (!data) return
-        const mapped = data
-          .filter((t) => !t.is_system && t.is_active)
-          .map(convertLibraryToBookingTemplate)
-          .filter((t): t is BookingTemplate => t !== null)
-        setLibraryTemplates(mapped)
+        setLibraryRaw(data.filter((tt) => !tt.is_system && tt.is_active))
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return
       }
     })()
     return () => { controller.abort() }
   }, [])
+
+  // Lazy convertibility map. A template is "convertible" if it fits the
+  // simple debit/credit pair shape the QuickReview booking path expects.
+  // Non-convertible templates are still shown — they just route to the
+  // full journal-entry editor on click.
+  const convertedById = useMemo(() => {
+    const m = new Map<string, BookingTemplate | null>()
+    for (const raw of libraryRaw) m.set(raw.id, convertLibraryToBookingTemplate(raw))
+    return m
+  }, [libraryRaw])
 
   const commonTemplates = useMemo(
     () => getCommonTemplates(entityType, templateDirection),
@@ -211,41 +291,76 @@ export default function TemplatePicker({
     [advancedTemplates, advancedTransfers]
   )
 
-  // User-created library templates filtered by direction + entity
-  const relevantLibraryTemplates = useMemo(() => {
-    return libraryTemplates.filter((t) => {
-      if (entityType && t.entity_applicability !== 'all' && t.entity_applicability !== entityType) {
+  // Library templates filtered by entity_type only. Direction is NOT applied
+  // here — see the comment on convertedById above.
+  const relevantLibraryRaw = useMemo(() => {
+    return libraryRaw.filter((tt) => {
+      if (entityType && tt.entity_type && tt.entity_type !== 'all' && tt.entity_type !== entityType) {
         return false
       }
-      return t.direction === templateDirection || t.direction === 'transfer'
+      return true
     })
-  }, [libraryTemplates, entityType, templateDirection])
+  }, [libraryRaw, entityType])
 
-  // Search results (static + library)
-  const searchResults = useMemo(() => {
+  // Convertible templates surface first; within each group, sort by name.
+  const sortedLibraryRaw = useMemo(() => {
+    return [...relevantLibraryRaw].sort((a, b) => {
+      const ac = convertedById.get(a.id) ? 0 : 1
+      const bc = convertedById.get(b.id) ? 0 : 1
+      if (ac !== bc) return ac - bc
+      return a.name.localeCompare(b.name, 'sv')
+    })
+  }, [relevantLibraryRaw, convertedById])
+
+  // Search results (static + library). Library search ignores direction; the
+  // static catalog still respects it because it's curated content.
+  const searchResults = useMemo<
+    | { library: BookingTemplateLibrary[]; staticTemplates: BookingTemplate[] }
+    | null
+  >(() => {
     if (!searchQuery.trim()) return null
     const q = searchQuery.toLowerCase()
-    const libraryMatches = relevantLibraryTemplates.filter((t) =>
-      t.name_sv.toLowerCase().includes(q) || t.description_sv.toLowerCase().includes(q)
+    const libraryMatches = sortedLibraryRaw.filter((tt) =>
+      tt.name.toLowerCase().includes(q) ||
+      (tt.description ?? '').toLowerCase().includes(q)
     )
-    const staticMatches = searchTemplates(searchQuery, entityType).filter((t) => {
-      if (t.direction === templateDirection || t.direction === 'transfer') return true
-      return false
+    const staticMatches = searchTemplates(searchQuery, entityType).filter((tt) => {
+      return tt.direction === templateDirection || tt.direction === 'transfer'
     })
-    return [...libraryMatches, ...staticMatches]
-  }, [searchQuery, entityType, templateDirection, relevantLibraryTemplates])
+    return { library: libraryMatches, staticTemplates: staticMatches }
+  }, [searchQuery, entityType, templateDirection, sortedLibraryRaw])
 
   // Group templates by group for display
   const commonGrouped = useMemo(() => groupTemplates(allCommon), [allCommon])
   const advancedGrouped = useMemo(() => groupTemplates(allAdvanced), [allAdvanced])
 
+  const bumpLibraryMru = (libraryId: string) => {
+    fetch(`/api/settings/booking-templates/${libraryId}/touch`, { method: 'POST' }).catch(() => {})
+  }
+
   const handleSelect = (template: BookingTemplate) => {
-    // For library-backed templates, bump MRU so they surface at the top next time.
     if (isLibraryTemplateId(template.id)) {
-      const libraryId = template.id.slice(LIBRARY_TEMPLATE_PREFIX.length)
-      fetch(`/api/settings/booking-templates/${libraryId}/touch`, { method: 'POST' }).catch(() => {})
+      bumpLibraryMru(template.id.slice(LIBRARY_TEMPLATE_PREFIX.length))
     }
     onSelect(template)
+  }
+
+  // Click a raw library card. Convertible → fast QuickReview path via onSelect.
+  // Non-convertible → route to manual booking dialog pre-filled via the new
+  // onPickLibraryTemplate callback. MRU is only bumped after we confirm the
+  // click will actually do something — otherwise consumers that omit the
+  // callback would corrupt MRU ordering for templates the user never applied.
+  const handleSelectLibraryRaw = (raw: BookingTemplateLibrary) => {
+    const converted = convertedById.get(raw.id) ?? null
+    if (converted) {
+      bumpLibraryMru(raw.id)
+      onSelect(converted)
+      return
+    }
+    if (onPickLibraryTemplate) {
+      bumpLibraryMru(raw.id)
+      onPickLibraryTemplate(raw)
+    }
   }
 
   // Split suggestions: counterparty templates vs regular booking templates
@@ -277,38 +392,54 @@ export default function TemplatePicker({
       <div className="flex-1 overflow-auto px-4 pb-4 space-y-4">
         {/* Search results */}
         {searchResults !== null ? (
-          <div>
-            <p className="text-xs font-medium text-muted-foreground mb-2">
-              {searchResults.length === 0 ? t('no_results') : t('n_results', { count: searchResults.length })}
-            </p>
-            <div className="space-y-1.5">
-              {searchResults.map((t) => (
-                <TemplateCard
-                  key={t.id}
-                  template={t}
-                  selected={selectedTemplateId === t.id}
-                  onClick={() => handleSelect(t)}
-                />
-              ))}
-            </div>
-          </div>
+          (() => {
+            const totalResults = searchResults.library.length + searchResults.staticTemplates.length
+            return (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">
+                  {totalResults === 0 ? t('no_results') : t('n_results', { count: totalResults })}
+                </p>
+                <div className="space-y-1.5">
+                  {searchResults.library.map((raw) => (
+                    <LibraryTemplateCard
+                      key={raw.id}
+                      raw={raw}
+                      converted={convertedById.get(raw.id) ?? null}
+                      selected={selectedTemplateId === (convertedById.get(raw.id)?.id ?? raw.id)}
+                      onClick={() => handleSelectLibraryRaw(raw)}
+                    />
+                  ))}
+                  {searchResults.staticTemplates.map((tt) => (
+                    <TemplateCard
+                      key={tt.id}
+                      template={tt}
+                      selected={selectedTemplateId === tt.id}
+                      onClick={() => handleSelect(tt)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })()
         ) : (
           <>
-            {/* User-created library templates (company + team scope) */}
-            {relevantLibraryTemplates.length > 0 && (
+            {/* User-created library templates (company + team scope).
+                Direction is intentionally NOT applied here — all the user's
+                own templates are shown regardless of expense/income context. */}
+            {sortedLibraryRaw.length > 0 && (
               <div>
                 <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
                   <Building2 className="h-3 w-3" />
                   {t('my_templates')}
                 </p>
                 <div className="space-y-1.5">
-                  {relevantLibraryTemplates.map((t) => (
-                    <TemplateCard
-                      key={t.id}
-                      template={t}
-                      selected={selectedTemplateId === t.id}
-                      onClick={() => handleSelect(t)}
-                      compact
+                  {sortedLibraryRaw.map((raw) => (
+                    <LibraryTemplateCard
+                      key={raw.id}
+                      raw={raw}
+                      converted={convertedById.get(raw.id) ?? null}
+                      selected={selectedTemplateId === (convertedById.get(raw.id)?.id ?? raw.id)}
+                      onClick={() => handleSelectLibraryRaw(raw)}
                     />
                   ))}
                 </div>
