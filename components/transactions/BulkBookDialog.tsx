@@ -17,11 +17,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { applyTemplate } from '@/lib/bookkeeping/template-library'
 import { formatCurrency, formatDate, cn } from '@/lib/utils'
-import { Loader2, FileText, AlertTriangle, Check } from 'lucide-react'
+import { Loader2, FileText, AlertTriangle, Check, Plus, Trash2, Paperclip } from 'lucide-react'
 import type { BookingTemplateLibrary, BookingTemplateLibraryLine } from '@/types'
 import type { TransactionWithInvoice } from './transaction-types'
 
@@ -33,6 +34,7 @@ interface BulkBookDialogProps {
 }
 
 type Mode = 'one_line_per_tx' | 'sum_per_account'
+type Tab = 'template' | 'manual'
 
 interface PreviewLine {
   account_number: string
@@ -41,8 +43,27 @@ interface PreviewLine {
   line_description: string | undefined
 }
 
+interface ManualLine {
+  id: string
+  account_number: string
+  debit_amount: string  // form-state strings; parsed on send
+  credit_amount: string
+  line_description: string
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100
+}
+
+function parseAmount(s: string): number {
+  if (!s) return 0
+  const cleaned = s.replace(/\s/g, '').replace(',', '.')
+  const n = Number.parseFloat(cleaned)
+  return Number.isFinite(n) ? n : 0
+}
+
+function newManualLineId(): string {
+  return `ml-${Math.random().toString(36).slice(2, 10)}`
 }
 
 export default function BulkBookDialog({
@@ -56,12 +77,22 @@ export default function BulkBookDialog({
   const supabase = useMemo(() => createClient(), [])
   const t = useTranslations('tx_bulk_book')
 
+  const [tab, setTab] = useState<Tab>('template')
   const [templates, setTemplates] = useState<BookingTemplateLibrary[]>([])
   const [loadingTemplates, setLoadingTemplates] = useState(true)
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>('one_line_per_tx')
   const [description, setDescription] = useState('')
+  const [manualLines, setManualLines] = useState<ManualLine[]>([])
   const [submitting, setSubmitting] = useState(false)
+
+  // Documents that will inherit onto the new verifikat. Computed from
+  // transactions.document_id; the RPC reads these and updates each doc's
+  // journal_entry_id atomically with the verifikat commit.
+  const docCount = useMemo(
+    () => transactions.filter((tx) => tx.document_id).length,
+    [transactions],
+  )
 
   const txCount = transactions.length
   const sharedDate = transactions[0]?.date
@@ -109,17 +140,62 @@ export default function BulkBookDialog({
   // Reset state when dialog closes so the next open starts clean.
   useEffect(() => {
     if (!open) {
+      setTab('template')
       setSelectedTemplateId(null)
       setMode('one_line_per_tx')
       setDescription('')
+      setManualLines([])
     } else if (sharedDate) {
       // Pre-fill description with a sensible default the user can edit.
       setDescription(t('default_description', { date: sharedDate }))
     }
   }, [open, sharedDate, t])
 
-  // Live line preview — recomputes when template/mode/tx-set changes.
+  // Pre-fill the bank side from the txs (one line per tx on 1930 with
+  // the correct Dr/Cr direction). We intentionally do NOT pre-fill a
+  // counterpart account: swedish-compliance flagged that a hardcoded
+  // 3001/5800 prefill nudges users into submitting verifikat without a
+  // VAT line (26xx) for momsregistrerade affärshändelser. The bank
+  // side is the unambiguous part the user always wants; the
+  // counterpart (and any VAT split) is the user's responsibility.
+  useEffect(() => {
+    if (tab !== 'manual') return
+    if (manualLines.length > 0) return
+    if (transactions.length === 0) return
+    const isIncome = direction === 'income'
+    const bankLines: ManualLine[] = transactions.map((tx) => ({
+      id: newManualLineId(),
+      account_number: '1930',
+      debit_amount: isIncome ? Math.abs(tx.amount).toFixed(2).replace('.', ',') : '',
+      credit_amount: isIncome ? '' : Math.abs(tx.amount).toFixed(2).replace('.', ','),
+      line_description: (tx.description || '').slice(0, 40).trim(),
+    }))
+    // One empty counterpart row to scaffold the next entry. Account
+    // left blank — user must choose, which avoids the no-VAT trap.
+    const counterpart: ManualLine = {
+      id: newManualLineId(),
+      account_number: '',
+      debit_amount: '',
+      credit_amount: '',
+      line_description: '',
+    }
+    setManualLines([...bankLines, counterpart])
+  }, [tab, manualLines.length, transactions, direction])
+
+  // Live line preview — driven by either the template/mode pair (template
+  // tab) or the user-edited manual lines (manual tab). Same downstream
+  // invariants (balance + bank-leg match) apply to both paths.
   const previewLines = useMemo<PreviewLine[]>(() => {
+    if (tab === 'manual') {
+      return manualLines
+        .map<PreviewLine>((ml) => ({
+          account_number: ml.account_number,
+          debit_amount: round2(parseAmount(ml.debit_amount)),
+          credit_amount: round2(parseAmount(ml.credit_amount)),
+          line_description: ml.line_description.trim() || undefined,
+        }))
+        .filter((l) => l.debit_amount > 0 || l.credit_amount > 0)
+    }
     if (!selectedTemplate) return []
     const templateLines = (selectedTemplate.lines ?? []) as BookingTemplateLibraryLine[]
     const lines: PreviewLine[] = []
@@ -156,7 +232,7 @@ export default function BulkBookDialog({
       }
     }
     return lines
-  }, [selectedTemplate, mode, transactions, txSumAbs])
+  }, [tab, manualLines, selectedTemplate, mode, transactions, txSumAbs])
 
   const previewTotals = useMemo(() => {
     const debit = previewLines.reduce((s, l) => s + l.debit_amount, 0)
@@ -173,27 +249,74 @@ export default function BulkBookDialog({
   const expectedBankNet = direction === 'income' ? txSumAbs : -txSumAbs
   const bankMatches = Math.abs(bankLineNet - expectedBankNet) < 0.005
 
+  // The active tab gates which selector must be valid. Both paths still
+  // need a non-empty description, ≥2 lines, balance, bank-leg match,
+  // and (for manual mode) valid 4-digit account numbers — without this,
+  // a 1–3-digit entry escapes the lexicographic bank-account range
+  // check ('193' < '1900' is true), bank match could pass, and the
+  // server's Zod schema rejects with a 400 only after submit.
+  const tabReady = tab === 'template' ? selectedTemplate !== null : manualLines.length > 0
+  const allAccountsValid = previewLines.every((l) => /^\d{4}$/.test(l.account_number))
   const canConfirm =
     !submitting &&
-    selectedTemplate !== null &&
+    tabReady &&
     description.trim().length > 0 &&
     previewLines.length >= 2 &&
     isBalanced &&
-    bankMatches
+    bankMatches &&
+    allAccountsValid
+
+  function updateManualLine(id: string, patch: Partial<Omit<ManualLine, 'id'>>) {
+    setManualLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)))
+  }
+
+  function removeManualLine(id: string) {
+    setManualLines((prev) => prev.filter((l) => l.id !== id))
+  }
+
+  function addManualLine() {
+    setManualLines((prev) => [
+      ...prev,
+      {
+        id: newManualLineId(),
+        account_number: '',
+        debit_amount: '',
+        credit_amount: '',
+        line_description: '',
+      },
+    ])
+  }
 
   async function handleConfirm() {
     if (!canConfirm) return
     setSubmitting(true)
     try {
+      // Build the payload per the active tab. Template path uses the
+      // existing schema branch (template_id + mode). Manual path sends
+      // the user-edited lines directly.
+      const payload =
+        tab === 'manual'
+          ? {
+              tx_ids: transactions.map((tx) => tx.id),
+              entry_description: description.trim(),
+              manual_lines: previewLines.map((l) => ({
+                account_number: l.account_number,
+                debit_amount: l.debit_amount,
+                credit_amount: l.credit_amount,
+                currency: sharedCurrency,
+                line_description: l.line_description ?? undefined,
+              })),
+            }
+          : {
+              tx_ids: transactions.map((tx) => tx.id),
+              template_id: selectedTemplateId,
+              mode,
+              entry_description: description.trim(),
+            }
       const response = await fetch('/api/transactions/bulk-book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tx_ids: transactions.map((tx) => tx.id),
-          template_id: selectedTemplateId,
-          mode,
-          entry_description: description.trim(),
-        }),
+        body: JSON.stringify(payload),
       })
       if (!response.ok) {
         const body = await response.json().catch(() => null)
@@ -260,6 +383,16 @@ export default function BulkBookDialog({
             </p>
           </div>
 
+          {/* Tab: Mall (template) / Manuell (hand-built lines). Default
+              template; manual is the "I want to book it myself" escape
+              hatch the user asked for after PR #606. */}
+          <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="space-y-4">
+            <TabsList className="grid grid-cols-2 w-full">
+              <TabsTrigger value="template">{t('tab_template')}</TabsTrigger>
+              <TabsTrigger value="manual">{t('tab_manual')}</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="template" className="space-y-4 mt-0">
           {/* Template picker */}
           <div className="space-y-2">
             <Label>{t('template_label')}</Label>
@@ -343,9 +476,107 @@ export default function BulkBookDialog({
               </div>
             </div>
           )}
+            </TabsContent>
 
-          {/* Description */}
-          {selectedTemplate && (
+            <TabsContent value="manual" className="space-y-4 mt-0">
+              {/* Manual line editor. Lines are pre-filled from txs on first
+                  switch to this tab (one line per tx on 1930 + counterpart
+                  line on 3001/5800). User adjusts accounts, amounts, and
+                  descriptions. Live balance + bank-leg checks below drive
+                  the confirm button. */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>{t('manual_lines_label')}</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={addManualLine}
+                  >
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    {t('manual_add_line')}
+                  </Button>
+                </div>
+                <div className="rounded-lg border bg-card overflow-hidden">
+                  <table className="w-full text-xs tabular-nums">
+                    <thead>
+                      <tr className="border-b text-muted-foreground bg-muted/30">
+                        <th className="px-2 py-2 text-left font-medium w-[90px]">{t('col_account')}</th>
+                        <th className="px-2 py-2 text-left font-medium">{t('col_description')}</th>
+                        <th className="px-2 py-2 text-right font-medium w-[110px]">{t('col_debit')}</th>
+                        <th className="px-2 py-2 text-right font-medium w-[110px]">{t('col_credit')}</th>
+                        <th className="w-8" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {manualLines.map((line) => (
+                        <tr key={line.id} className="border-b border-border/40 last:border-b-0">
+                          <td className="px-2 py-1">
+                            <Input
+                              value={line.account_number}
+                              onChange={(e) =>
+                                updateManualLine(line.id, { account_number: e.target.value.replace(/\D/g, '').slice(0, 4) })
+                              }
+                              placeholder="1930"
+                              className="h-8 text-xs font-mono"
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <Input
+                              value={line.line_description}
+                              onChange={(e) =>
+                                updateManualLine(line.id, { line_description: e.target.value.slice(0, 200) })
+                              }
+                              placeholder={t('manual_description_placeholder')}
+                              className="h-8 text-xs"
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <Input
+                              inputMode="decimal"
+                              value={line.debit_amount}
+                              onChange={(e) =>
+                                updateManualLine(line.id, { debit_amount: e.target.value })
+                              }
+                              placeholder="0,00"
+                              className="h-8 text-xs text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <Input
+                              inputMode="decimal"
+                              value={line.credit_amount}
+                              onChange={(e) =>
+                                updateManualLine(line.id, { credit_amount: e.target.value })
+                              }
+                              placeholder="0,00"
+                              className="h-8 text-xs text-right"
+                            />
+                          </td>
+                          <td className="px-1 py-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                              onClick={() => removeManualLine(line.id)}
+                              aria-label={t('manual_remove_line')}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
+
+          {/* Description — shared by both tabs once the user has either a
+              template selected or manual lines drafted. */}
+          {tabReady && (
             <div className="space-y-2">
               <Label htmlFor="bulk-description">{t('description_label')}</Label>
               <Input
@@ -357,8 +588,19 @@ export default function BulkBookDialog({
             </div>
           )}
 
+          {/* Document inheritance hint — informs the user which receipts
+              follow the txs onto the combined verifikat. Zero is fine
+              (txs without docs don't break anything); we only render
+              when the count is non-zero to avoid clutter. */}
+          {docCount > 0 && tabReady && (
+            <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
+              <span>{t('docs_inherit_hint', { count: docCount })}</span>
+            </div>
+          )}
+
           {/* Live preview */}
-          {selectedTemplate && previewLines.length > 0 && (
+          {tabReady && previewLines.length > 0 && (
             <div className="space-y-2">
               <Label>
                 {t('preview_label', { count: previewLines.length })}

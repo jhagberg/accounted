@@ -1860,6 +1860,13 @@
     "success_title": "Samlingsverifikation skapad",
     "success_description": "{count} transaktioner bokförda till verifikat {voucher}.",
     "unknown_voucher": "(utan nummer)",
+    "tab_template": "Mall",
+    "tab_manual": "Manuell",
+    "manual_lines_label": "Rader",
+    "manual_add_line": "Lägg till rad",
+    "manual_remove_line": "Ta bort rad",
+    "manual_description_placeholder": "Beskrivning (valfritt)",
+    "docs_inherit_hint": "{count, plural, one {# verifikationsunderlag följer med (sparas i 7 år enligt BFL 7 kap)} other {# verifikationsunderlag följer med (sparas i 7 år enligt BFL 7 kap)}}",
     "cancel": "Avbryt",
     "confirm": "Bekräfta bokföring"
   },

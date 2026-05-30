@@ -2084,6 +2084,13 @@ const BULK_BOOK: Record<string, StructuredErrorEntry> = {
     message_en: 'Database error during bulk booking. Please retry.',
     retryable: true,
   },
+  BULK_BOOK_INVALID_ACCOUNT: {
+    httpStatus: 400,
+    message_sv:
+      'Ett eller flera konton finns inte i kontoplanen eller är inaktiva. Välj giltiga BAS-konton.',
+    message_en:
+      'One or more accounts are not in the chart of accounts or are inactive. Pick valid BAS accounts.',
+  },
 }
 
 // ─────────────────────────────────────────────────────────────────

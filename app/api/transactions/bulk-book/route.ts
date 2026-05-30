@@ -18,6 +18,7 @@ interface RpcOk {
   voucher_number: number | null
   linked_tx_count: number
   tx_sum: number
+  docs_linked: number
 }
 
 interface RpcErr {
@@ -70,11 +71,58 @@ export const POST = withRouteContext(
 
     const opLog = log.child({ txCount: body.tx_ids.length })
 
-    // Branch 2 needs the template + tx amounts; branch 1 hands off to the
-    // RPC directly with a null new_entry.
+    // Three paths now (PR #608):
+    //   1. existing_journal_entry_id → null new_entry, RPC links txs to JE.
+    //   2. template_id → route expands template per mode, builds lines.
+    //   3. manual_lines → caller-built lines pass straight through.
     let newEntryPayload: { description: string; lines: ComputedLine[] } | null = null
 
-    if (body.template_id && body.mode && body.entry_description) {
+    if (body.manual_lines && body.entry_description) {
+      // Manual mode. The Zod schema validated the 4-digit format; the
+      // RPC's balance + bank-leg + negative-amount + both-sides-nonzero
+      // guards still run downstream. What's missing is verifying the
+      // account_numbers exist in this company's chart_of_accounts —
+      // without it a typo or adversarial caller could post to a BAS
+      // account that doesn't exist, corrupting the hauptbok and
+      // breaking SIE export. Single roundtrip allowlist check.
+      const accountNumbers = Array.from(
+        new Set(body.manual_lines.map((l) => l.account_number)),
+      )
+      const { data: knownAccounts, error: accountsError } = await supabase
+        .from('chart_of_accounts')
+        .select('account_number')
+        .eq('company_id', companyId)
+        .eq('is_active', true)
+        .in('account_number', accountNumbers)
+      if (accountsError) {
+        opLog.error('chart_of_accounts lookup failed', accountsError)
+        return errorResponseFromCode('BULK_BOOK_RPC_FAILED', opLog, {
+          requestId,
+          details: { message: accountsError.message },
+        })
+      }
+      const validSet = new Set(
+        (knownAccounts ?? []).map((a: { account_number: string }) => a.account_number),
+      )
+      const invalid = accountNumbers.filter((n) => !validSet.has(n))
+      if (invalid.length > 0) {
+        return errorResponseFromCode('BULK_BOOK_INVALID_ACCOUNT', opLog, {
+          requestId,
+          details: { invalid_accounts: invalid },
+        })
+      }
+      newEntryPayload = {
+        description: body.entry_description,
+        lines: body.manual_lines.map((l, i) => ({
+          account_number: l.account_number,
+          debit_amount: round2(l.debit_amount),
+          credit_amount: round2(l.credit_amount),
+          currency: l.currency,
+          line_description: l.line_description,
+          sort_order: i,
+        })),
+      }
+    } else if (body.template_id && body.mode && body.entry_description) {
       // Fetch the template. RLS scopes to user's companies + system templates,
       // so we don't need a company_id filter here.
       const { data: template, error: templateError } = await supabase
@@ -184,11 +232,12 @@ export const POST = withRouteContext(
       }
     }
 
+    // p_user_id removed in PR #608 (round-3 hardening pattern applied
+    // consistently). RPC resolves the caller via auth.uid().
     const { data, error } = await supabase.rpc('bulk_book_transactions', {
       p_tx_ids: body.tx_ids,
       p_existing_journal_entry_id: body.existing_journal_entry_id ?? null,
       p_new_entry: newEntryPayload,
-      p_user_id: user.id,
       p_company_id: companyId,
     })
 
@@ -247,6 +296,7 @@ export const POST = withRouteContext(
         voucher_number: result.voucher_number,
         linked_tx_count: result.linked_tx_count,
         tx_sum: result.tx_sum,
+        docs_linked: result.docs_linked,
       },
     })
   },

@@ -567,15 +567,37 @@ export const BulkBookSchema = z
     template_id: uuid.optional(),
     mode: z.enum(['one_line_per_tx', 'sum_per_account']).optional(),
     entry_description: z.string().min(1).max(500).optional(),
+    // PR #608: manual lines path. Mutually exclusive with template_id /
+    // existing_journal_entry_id. The route passes these straight through
+    // to the RPC's p_new_entry.lines.
+    manual_lines: z
+      .array(
+        z.object({
+          account_number: accountNumber,
+          // Bound at 99,999,999 SEK per line (compliance-swarm V4.5).
+          // Real-world max is in the millions; an 8-digit ceiling catches
+          // typos (1000000 mistyped as 10000000000) before they hit the
+          // RPC, without blocking legitimate large bookings.
+          debit_amount: nonNegativeAmount.max(99_999_999, 'Line amount exceeds maximum'),
+          credit_amount: nonNegativeAmount.max(99_999_999, 'Line amount exceeds maximum'),
+          currency: z.string().min(3).max(3).default('SEK'),
+          line_description: z.string().max(200).optional(),
+        })
+      )
+      .min(2, 'A verifikat needs at least two lines')
+      .max(200)
+      .optional(),
   })
   .superRefine((data, ctx) => {
     const hasExisting = !!data.existing_journal_entry_id
     const hasTemplate = !!data.template_id
-    if (hasExisting === hasTemplate) {
+    const hasManual = !!data.manual_lines
+    const paths = [hasExisting, hasTemplate, hasManual].filter(Boolean).length
+    if (paths !== 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          'Provide either existing_journal_entry_id (link) or template_id (create new) — not both, and not neither',
+          'Provide exactly one of: existing_journal_entry_id (link), template_id (template), or manual_lines (manual)',
         path: ['existing_journal_entry_id'],
       })
       return
@@ -595,6 +617,13 @@ export const BulkBookSchema = z
           path: ['entry_description'],
         })
       }
+    }
+    if (hasManual && !data.entry_description) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'entry_description is required when manual_lines is set',
+        path: ['entry_description'],
+      })
     }
   })
 
