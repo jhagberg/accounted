@@ -952,6 +952,13 @@ export const UpdateAccountSchema = z.object({
 export const BankLinkSchema = z.object({
   transaction_id: uuid,
   journal_entry_id: uuid,
+  // Settlement account being reconciled. The voucher must have a line on this
+  // account and the transaction must belong to it. Defaults to '1930' in the
+  // route for back-compat.
+  account_number: z
+    .string()
+    .regex(/^[0-9]{4}$/, 'Kontonummer måste vara 4 siffror')
+    .optional(),
 })
 
 export const BankUnlinkSchema = z.object({

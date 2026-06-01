@@ -440,39 +440,84 @@ describe('manualLink', () => {
     expect(result.error).toBe('Transaction is already linked to a journal entry')
   })
 
-  it('rejects when journal entry has no 1930 line', async () => {
+  it('rejects when journal entry has no line on the selected account', async () => {
     const { supabase, enqueue } = createQueueMockSupabase()
     const tx = makeTransaction({ id: 'tx-1', journal_entry_id: null })
 
-    // Transaction found
+    // Transaction found (cash_account_id null → cross-check skipped)
     enqueue({ data: tx })
     // Journal entry found
     enqueue({ data: { id: 'je-1', user_id: 'company-1', status: 'posted' } })
-    // No 1930 lines
+    // No line on the selected account
     enqueue({ data: [] })
 
-    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1')
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1', '1930')
 
     expect(result.success).toBe(false)
-    expect(result.error).toBe('Verifikationen saknar rad på bankkonto (19xx)')
+    expect(result.error).toBe('Verifikationen saknar rad på 1930')
   })
 
-  it('succeeds when all validations pass', async () => {
+  it('rejects when the transaction belongs to a different cash account', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const tx = makeTransaction({
+      id: 'tx-1',
+      journal_entry_id: null,
+      cash_account_id: 'ca-1931',
+    })
+
+    // Transaction found (bound to a cash account)
+    enqueue({ data: tx })
+    // Journal entry found + posted
+    enqueue({ data: { id: 'je-1', user_id: 'company-1', status: 'posted' } })
+    // Cross-check: this cash account maps to 1931, but we're reconciling 1930
+    enqueue({ data: { ledger_account: '1931' } })
+
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1', '1930')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('Transaktionen hör till 1931, inte 1930')
+  })
+
+  it('succeeds when all validations pass (line on selected account)', async () => {
     const { supabase, enqueue } = createQueueMockSupabase()
     const tx = makeTransaction({ id: 'tx-1', journal_entry_id: null })
 
-    // Transaction found
+    // Transaction found (cash_account_id null → cross-check skipped)
     enqueue({ data: tx })
     // Journal entry found
     enqueue({ data: { id: 'je-1', user_id: 'company-1', status: 'posted' } })
-    // 1930 line exists
-    enqueue({ data: [{ debit_amount: 1000, credit_amount: 0 }] })
+    // Line exists on the selected account
+    enqueue({ data: [{ debit_amount: 1000, credit_amount: 0, account_number: '1930' }] })
     // No existing link
     enqueue({ data: null, error: null })
     // Update succeeds
     enqueue({ data: null, error: null })
 
-    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1')
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1', '1930')
+
+    expect(result.success).toBe(true)
+  })
+
+  it('succeeds for a bound transaction when the account matches', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const tx = makeTransaction({
+      id: 'tx-1',
+      journal_entry_id: null,
+      cash_account_id: 'ca-1930',
+    })
+
+    enqueue({ data: tx })
+    enqueue({ data: { id: 'je-1', user_id: 'company-1', status: 'posted' } })
+    // Cross-check: cash account maps to the account being reconciled
+    enqueue({ data: { ledger_account: '1930' } })
+    // Line exists on 1930
+    enqueue({ data: [{ debit_amount: 1000, credit_amount: 0, account_number: '1930' }] })
+    // No existing link
+    enqueue({ data: null, error: null })
+    // Update succeeds
+    enqueue({ data: null, error: null })
+
+    const result = await manualLink(supabase as never, 'company-1', 'tx-1', 'je-1', 'user-1', '1930')
 
     expect(result.success).toBe(true)
   })

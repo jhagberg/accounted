@@ -15,6 +15,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -36,6 +38,27 @@ const METHOD_LABELS: Record<string, string> = {
   auto_fuzzy: 'Ungefärlig matchning',
   manual: 'Manuell',
 }
+
+// One-click bookings for transactions with no upstream invoice/voucher to match
+// against — the common "stuck on the unmatched list" cause (small ränteintäkter,
+// bankavgifter, valutakursdifferenser). These reuse the existing bank_finance
+// booking templates; the categorize endpoint rewrites the bank leg to the
+// transaction's actual settlement account, so they book correctly on ANY cash
+// account (1930, a savings account, a EUR account…), not just 1930.
+// `account` is the non-bank leg (revenue/cost) — the bank leg is the selected
+// account. Income templates apply to positive amounts, expense to negative.
+const QUICK_BOOK_TEMPLATES: {
+  id: string
+  label: string
+  account: string
+  direction: 'income' | 'expense'
+}[] = [
+  { id: 'bank_interest_income', label: 'ränteintäkt', account: '8310', direction: 'income' },
+  { id: 'bank_currency_gain', label: 'valutakursvinst', account: '3960', direction: 'income' },
+  { id: 'bank_fees', label: 'bankavgift', account: '6570', direction: 'expense' },
+  { id: 'bank_interest_expense', label: 'räntekostnad', account: '8410', direction: 'expense' },
+  { id: 'bank_currency_loss', label: 'valutakursförlust', account: '7960', direction: 'expense' },
+]
 
 // ============================================================
 // Types
@@ -282,6 +305,13 @@ export function BankReconciliationView() {
   const [showIgnored, setShowIgnored] = useState(true)
   const [ignoredTx, setIgnoredTx] = useState<UnmatchedTransaction[]>([])
   const [selectedMatch, setSelectedMatch] = useState<Record<string, string>>({})
+  // True when the unmatched list hit the API's 500-row cap — surfaced so a long
+  // date range doesn't silently hide rows and let the user think they're done.
+  const [unmatchedTruncated, setUnmatchedTruncated] = useState(false)
+  // Aborts the previous in-flight load when the account/date filters change, so
+  // a slow stale response can't overwrite the freshly-selected account's data
+  // (the intermittent "flips between accounts" bug).
+  const fetchAbortRef = useRef<AbortController | null>(null)
 
   const { dialogProps: confirmDialogProps, confirm } = useDestructiveConfirm()
   const { toast } = useToast()
@@ -308,6 +338,14 @@ export function BankReconciliationView() {
   }, [])
 
   const fetchAll = useCallback(async () => {
+    // Cancel any in-flight load — it may be for a different account. Without
+    // this, switching accounts quickly lets an older response land last and
+    // overwrite the current account's data.
+    fetchAbortRef.current?.abort()
+    const controller = new AbortController()
+    fetchAbortRef.current = controller
+    const { signal } = controller
+
     setLoading(true)
     setError(null)
     try {
@@ -326,10 +364,10 @@ export function BankReconciliationView() {
       const reconciledQs = `?reconciled=true&${txParams}`
 
       const [statusRes, glRes, unmatchedRes, matchedRes] = await Promise.all([
-        fetch(`/api/reconciliation/bank/status${qs}`),
-        fetch(`/api/reconciliation/bank/unmatched-entries${qs}`),
-        fetch(`/api/transactions${unmatchedQs}`),
-        fetch(`/api/transactions${reconciledQs}`),
+        fetch(`/api/reconciliation/bank/status${qs}`, { signal }),
+        fetch(`/api/reconciliation/bank/unmatched-entries${qs}`, { signal }),
+        fetch(`/api/transactions${unmatchedQs}`, { signal }),
+        fetch(`/api/transactions${reconciledQs}`, { signal }),
       ])
 
       const [statusData, glData, unmatchedData, matchedData] = await Promise.all([
@@ -339,10 +377,15 @@ export function BankReconciliationView() {
         matchedRes.json(),
       ])
 
+      // A newer load superseded this one while we awaited — discard these
+      // stale results rather than clobber the current account's data.
+      if (signal.aborted) return
+
       if (statusData.data) setStatus(statusData.data)
       setGlLines(glData.data || [])
       setUnmatchedTx(unmatchedData.data || [])
       setMatchedTx(matchedData.data || [])
+      setUnmatchedTruncated(Boolean(unmatchedData.has_more))
 
       // Refresh the ignored list whenever the main lists refresh.
       // Deliberately NOT filtered by account or currency — if a user ignored
@@ -351,23 +394,35 @@ export function BankReconciliationView() {
       // keeps the Återställ path reachable from any account selection. The
       // date filter is also dropped so old ignores stay visible.
       try {
-        const ignoredRes = await fetch(`/api/transactions?unmatched=true&only_ignored=true`)
+        const ignoredRes = await fetch(`/api/transactions?unmatched=true&only_ignored=true`, { signal })
         const ignoredData = await ignoredRes.json()
-        setIgnoredTx(ignoredData.data || [])
+        if (!signal.aborted) setIgnoredTx(ignoredData.data || [])
       } catch {
-        setIgnoredTx([])
+        if (!signal.aborted) setIgnoredTx([])
       }
     } catch (e) {
+      // Aborts are expected when the user switches account/date quickly.
+      if (signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
       console.error('[reconciliation] fetchAll failed', e)
       setError('Kunde inte hämta avstämningsdata')
     } finally {
-      setLoading(false)
+      // Only the latest load owns the spinner; a superseded load must not flip
+      // it off while the fresh one is still running.
+      if (!signal.aborted) setLoading(false)
     }
   }, [dateFrom, dateTo, accountNumber, accountCurrency])
 
   useEffect(() => {
     fetchAll()
   }, [fetchAll])
+
+  // Reset transient per-account UI state when the selected account changes. A
+  // verifikation pick or a dry-run preview computed for the previous account is
+  // meaningless against the new one — and applying it would cross-link.
+  useEffect(() => {
+    setSelectedMatch({})
+    setDryRunResults(null)
+  }, [accountNumber])
 
   const handleDryRun = async () => {
     setRunLoading(true)
@@ -428,6 +483,7 @@ export function BankReconciliationView() {
         body: JSON.stringify({
           transaction_id: transactionId,
           journal_entry_id: journalEntryId,
+          account_number: accountNumber,
         }),
       })
       const result = await res.json()
@@ -470,13 +526,15 @@ export function BankReconciliationView() {
   }
 
   /**
-   * Inline shortcut for the most common "stuck on the unmatched list" cause:
-   * a small ränteintäkt that has no upstream voucher to match against. Calls
-   * the standard categorize endpoint with the existing bank_interest_income
+   * Inline one-click booking for an unmatched transaction with no upstream
+   * voucher to match against (ränteintäkter, bankavgifter, valutakurs-
+   * differenser). Calls the standard categorize endpoint with a bank_finance
    * template so the resulting verifikation is identical to the /transactions
-   * flow — no parallel booking path.
+   * flow — no parallel booking path. The categorize endpoint rewrites the bank
+   * leg to the transaction's actual settlement account, so this is correct on
+   * any cash account.
    */
-  const handleBookInterestIncome = async (transactionId: string) => {
+  const handleQuickBook = async (transactionId: string, templateId: string) => {
     setActionLoading(transactionId)
     try {
       const res = await fetch(`/api/transactions/${transactionId}/categorize`, {
@@ -484,13 +542,13 @@ export function BankReconciliationView() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           is_business: true,
-          template_id: 'bank_interest_income',
+          template_id: templateId,
           confirm_no_match: true,
         }),
       })
       const result = await res.json()
       if (!res.ok || result.error) {
-        setError(result.error?.message || result.error || 'Kunde inte bokföra ränteintäkten')
+        setError(result.error?.message || result.error || 'Kunde inte bokföra transaktionen')
         return
       }
       if (result.journal_entry_error) {
@@ -499,7 +557,7 @@ export function BankReconciliationView() {
       }
       await fetchAll()
     } catch {
-      setError('Kunde inte bokföra ränteintäkten')
+      setError('Kunde inte bokföra transaktionen')
     } finally {
       setActionLoading(null)
     }
@@ -773,14 +831,21 @@ export function BankReconciliationView() {
               </p>
             )}
           </div>
+          {unmatchedTruncated && (
+            <p className="text-xs text-muted-foreground">
+              Visar de senaste 500 transaktionerna — begränsa datumintervallet för att se fler.
+            </p>
+          )}
           <div className="space-y-3">
             {unmatchedTx.map((tx) => {
-              // Piggy-bank shortcut hardcodes the 1930↔8310 ränteintäkt template,
-              // so only offer it on a SEK account using 1930. On EUR (1932) or
-              // other settlement accounts the booking would post the EUR amount
-              // to the SEK cash account — silently wrong, hide it.
-              const canBookInterest = tx.amount > 0 && accountNumber === '1930'
               const isPositive = tx.amount > 0
+              // Quick-book options matching the transaction's direction. The
+              // bank leg books to the SELECTED account (the categorize endpoint
+              // rewrites it from the cash_account_id), so these are correct on
+              // any account, not just 1930.
+              const quickBooks = QUICK_BOOK_TEMPLATES.filter((t) =>
+                isPositive ? t.direction === 'income' : t.direction === 'expense',
+              )
               return (
                 <div
                   key={tx.id}
@@ -826,19 +891,36 @@ export function BankReconciliationView() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-72">
-                          {canBookInterest && (
-                            <DropdownMenuItem
-                              onClick={() => handleBookInterestIncome(tx.id)}
-                              disabled={actionLoading === tx.id}
-                            >
-                              <PiggyBank className="h-4 w-4" />
-                              <div className="flex flex-col">
-                                <span>Bokför som ränteintäkt</span>
-                                <span className="text-xs text-muted-foreground">
-                                  1930 mot 8310, ingen moms
-                                </span>
-                              </div>
-                            </DropdownMenuItem>
+                          {quickBooks.length > 0 && (
+                            <>
+                              <DropdownMenuLabel className="text-[11px] font-normal uppercase tracking-wider text-muted-foreground">
+                                Bokför direkt
+                              </DropdownMenuLabel>
+                              {quickBooks.map((t) => {
+                                // Read as "debit mot credit": income debits the
+                                // bank (selected account), credits revenue;
+                                // expense debits the cost account, credits bank.
+                                const legs = isPositive
+                                  ? `${accountNumber} mot ${t.account}`
+                                  : `${t.account} mot ${accountNumber}`
+                                return (
+                                  <DropdownMenuItem
+                                    key={t.id}
+                                    onClick={() => handleQuickBook(tx.id, t.id)}
+                                    disabled={actionLoading === tx.id}
+                                  >
+                                    <PiggyBank className="h-4 w-4" />
+                                    <div className="flex flex-col">
+                                      <span>Bokför som {t.label}</span>
+                                      <span className="text-xs text-muted-foreground tabular-nums">
+                                        {legs}
+                                      </span>
+                                    </div>
+                                  </DropdownMenuItem>
+                                )
+                              })}
+                              <DropdownMenuSeparator />
+                            </>
                           )}
                           <DropdownMenuItem
                             onClick={() => handleIgnore(tx)}

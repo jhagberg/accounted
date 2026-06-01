@@ -39,6 +39,9 @@ vi.mock('@/lib/currency/riksbanken', () => ({
 
 function createQueueMockSupabase() {
   const resultQueue: { data: unknown; error: unknown }[] = []
+  // Captures .insert() payloads keyed by table, so tests can assert what was
+  // written (e.g. cash_account_id stamping).
+  const inserts: Record<string, unknown[]> = {}
 
   /**
    * Push one or more results onto the queue.
@@ -50,25 +53,31 @@ function createQueueMockSupabase() {
     }
   }
 
-  const buildChain = (): unknown => {
+  const buildChain = (table: string): unknown => {
     const handler: ProxyHandler<object> = {
       get(_target, prop) {
         if (prop === 'then') {
           const next = resultQueue.shift() ?? { data: null, error: null }
           return (resolve: (v: unknown) => void) => resolve(next)
         }
-        return (..._args: unknown[]) => buildChain()
+        if (prop === 'insert') {
+          return (payload: unknown) => {
+            ;(inserts[table] ??= []).push(payload)
+            return buildChain(table)
+          }
+        }
+        return (..._args: unknown[]) => buildChain(table)
       },
     }
     return new Proxy({}, handler)
   }
 
   const supabase = {
-    from: vi.fn().mockImplementation(() => buildChain()),
-    rpc: vi.fn().mockImplementation(() => buildChain()),
+    from: vi.fn().mockImplementation((table: string) => buildChain(table)),
+    rpc: vi.fn().mockImplementation(() => buildChain('rpc')),
   }
 
-  return { supabase, enqueue }
+  return { supabase, enqueue, inserts }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +161,54 @@ describe('ingestTransactions', () => {
     expect(result.duplicates).toBe(0)
     expect(result.errors).toBe(0)
     expect(result.transaction_ids).toEqual(['tx-1'])
+  })
+
+  // -----------------------------------------------------------------------
+  // 1c. Stamps cash_account_id from the settlement account
+  // -----------------------------------------------------------------------
+  it('stamps cash_account_id on the insert when settlementAccount resolves', async () => {
+    const { supabase, enqueue, inserts } = createQueueMockSupabase()
+    const raw = makeRaw({ amount: -100 })
+    const inserted = makeTransaction({ id: 'tx-1', external_id: raw.external_id })
+
+    enqueue({ data: [], error: null }) // booked map
+    enqueue({ data: [], error: null }) // unbooked map
+    enqueue({ data: [], error: null }) // supplier invoices
+    enqueue({ data: [], error: null }) // external_id dedup
+    enqueue({ data: { id: 'ca-1931' }, error: null }) // cash_accounts lookup
+    enqueue({ data: inserted, error: null }) // insert
+    mockEvaluateMappingRules.mockResolvedValue(makeMappingResult({ confidence: 0.5 }))
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw], {
+      settlementAccount: '1931',
+    })
+
+    expect(result.imported).toBe(1)
+    expect(supabase.from).toHaveBeenCalledWith('cash_accounts')
+    const txInserts = inserts['transactions'] ?? []
+    expect(txInserts).toHaveLength(1)
+    expect((txInserts[0] as { cash_account_id?: string | null }).cash_account_id).toBe('ca-1931')
+  })
+
+  it('inserts cash_account_id null when no settlementAccount is given', async () => {
+    const { supabase, enqueue, inserts } = createQueueMockSupabase()
+    const raw = makeRaw({ amount: -100 })
+    const inserted = makeTransaction({ id: 'tx-1', external_id: raw.external_id })
+
+    enqueue({ data: [], error: null }) // booked map
+    enqueue({ data: [], error: null }) // unbooked map
+    enqueue({ data: [], error: null }) // supplier invoices
+    enqueue({ data: [], error: null }) // external_id dedup
+    // No cash_accounts lookup — settlementAccount omitted.
+    enqueue({ data: inserted, error: null }) // insert
+    mockEvaluateMappingRules.mockResolvedValue(makeMappingResult({ confidence: 0.5 }))
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.imported).toBe(1)
+    expect(supabase.from).not.toHaveBeenCalledWith('cash_accounts')
+    const txInserts = inserts['transactions'] ?? []
+    expect((txInserts[0] as { cash_account_id?: string | null }).cash_account_id).toBeNull()
   })
 
   // -----------------------------------------------------------------------

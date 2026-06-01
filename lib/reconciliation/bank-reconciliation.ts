@@ -81,6 +81,45 @@ export interface ReconciliationOptions {
    * cash account so EUR transactions reconcile against 1932 etc.
    */
   currency?: string
+  /**
+   * cash_accounts.id of the selected account. When set, transactions are
+   * scoped to this exact account (with a currency fallback for legacy rows
+   * whose cash_account_id hasn't been backfilled yet) instead of being matched
+   * by currency alone — this is what stops two same-currency accounts (e.g.
+   * checking 1930 + savings 1931) from pooling together. Omit for the legacy
+   * currency-only behaviour.
+   */
+  cashAccountId?: string
+}
+
+/**
+ * Scope a transactions query builder to a single cash account, tolerating
+ * legacy rows that predate the cash_account_id backfill:
+ *   cash_account_id = X  OR  (cash_account_id IS NULL AND currency = cur)
+ * A bound row shows only on its own account; an unbound row falls back to
+ * currency so nothing disappears mid-backfill. When cashAccountId is omitted
+ * we keep the pure currency filter (back-compat).
+ */
+function scopeTransactionsToAccount<Q extends {
+  or(filters: string): Q
+  eq(column: string, value: string): Q
+}>(query: Q, cashAccountId: string | undefined, currency: string): Q {
+  // Both values are interpolated into a raw PostgREST filter string below. They
+  // are DB-derived in every caller (cash_accounts.id / .currency, or the 'SEK'
+  // default), never raw user input — but assert their shape anyway so a future
+  // caller cannot thread an unsanitized value through into the filter.
+  if (!/^[A-Z]{3}$/.test(currency)) {
+    throw new Error(`scopeTransactionsToAccount: invalid currency ${JSON.stringify(currency)}`)
+  }
+  if (cashAccountId) {
+    if (!/^[0-9a-fA-F-]{36}$/.test(cashAccountId)) {
+      throw new Error('scopeTransactionsToAccount: invalid cashAccountId (expected UUID)')
+    }
+    return query.or(
+      `cash_account_id.eq.${cashAccountId},and(cash_account_id.is.null,currency.eq.${currency})`,
+    )
+  }
+  return query.eq('currency', currency)
 }
 
 // ============================================================
@@ -175,19 +214,20 @@ export async function runReconciliation(
     dryRun = false,
     accountNumber = '1930',
     currency = 'SEK',
+    cashAccountId,
   } = options
 
   // Fetch unlinked GL lines via RPC
   const glLines = await fetchUnlinkedGLLines(supabase, companyId, accountNumber, dateFrom, dateTo)
 
-  // Fetch unmatched transactions
+  // Fetch unmatched transactions, scoped to the selected cash account.
   let query = supabase
     .from('transactions')
     .select('*')
     .eq('company_id', companyId)
     .is('journal_entry_id', null)
     .eq('is_ignored', false)
-    .eq('currency', currency)
+  query = scopeTransactionsToAccount(query, cashAccountId, currency)
 
   if (dateFrom) query = query.gte('date', dateFrom)
   if (dateTo) query = query.lte('date', dateTo)
@@ -268,16 +308,19 @@ export async function getReconciliationStatus(
   dateTo?: string,
   bankAccount = '1930',
   currency: string = 'SEK',
+  cashAccountId?: string,
 ): Promise<ReconciliationStatus> {
-  // Get all transactions in range. Ignored rows are pulled too so the totals
-  // card still reflects what the bank actually moved, but they're excluded
-  // from the "unmatched" count below — the user has explicitly said they
-  // don't want them surfacing as something to reconcile.
+  // Get all transactions in range, scoped to the selected cash account. Ignored
+  // rows are pulled too so the totals card still reflects what the bank
+  // actually moved, but they're excluded from the "unmatched" count below — the
+  // user has explicitly said they don't want them surfacing as something to
+  // reconcile. Scoping by cash account (not just currency) is what stops a
+  // second same-currency account from inflating bankTotal here.
   let txQuery = supabase
     .from('transactions')
     .select('amount, journal_entry_id, reconciliation_method, is_ignored')
     .eq('company_id', companyId)
-    .eq('currency', currency)
+  txQuery = scopeTransactionsToAccount(txQuery, cashAccountId, currency)
 
   if (dateFrom) txQuery = txQuery.gte('date', dateFrom)
   if (dateTo) txQuery = txQuery.lte('date', dateTo)
@@ -397,7 +440,8 @@ export async function manualLink(
   companyId: string,
   transactionId: string,
   journalEntryId: string,
-  userId: string
+  userId: string,
+  accountNumber: string = '1930',
 ): Promise<{ success: boolean; error?: string }> {
   // Fetch transaction
   const { data: tx, error: txError } = await supabase
@@ -431,16 +475,36 @@ export async function manualLink(
     return { success: false, error: 'Journal entry is not posted' }
   }
 
-  // Check for a bank account line (19xx class accounts)
+  // Defense-in-depth: the transaction must belong to the account being
+  // reconciled. A transaction bound to 1930 must not be linked against a 1931
+  // voucher even if the caller passes accountNumber=1931. Legacy rows with no
+  // cash_account_id fall through (the UI list already gates them by currency).
+  if (tx.cash_account_id) {
+    const { data: txCa } = await supabase
+      .from('cash_accounts')
+      .select('ledger_account')
+      .eq('id', tx.cash_account_id)
+      .eq('company_id', companyId)
+      .maybeSingle()
+    if (txCa?.ledger_account && txCa.ledger_account !== accountNumber) {
+      return {
+        success: false,
+        error: `Transaktionen hör till ${txCa.ledger_account}, inte ${accountNumber}`,
+      }
+    }
+  }
+
+  // Check for a bank account line on the SELECTED settlement account. The old
+  // "any 19xx line" check let a 1930 transaction link to a voucher that only
+  // touched 1931 — a cross-account link that silently hides a real imbalance.
   const { data: lines } = await supabase
     .from('journal_entry_lines')
     .select('debit_amount, credit_amount, account_number')
     .eq('journal_entry_id', journalEntryId)
-    .gte('account_number', '1900')
-    .lte('account_number', '1999')
+    .eq('account_number', accountNumber)
 
   if (!lines || lines.length === 0) {
-    return { success: false, error: 'Verifikationen saknar rad på bankkonto (19xx)' }
+    return { success: false, error: `Verifikationen saknar rad på ${accountNumber}` }
   }
 
   // Check that no other transaction is already linked to this entry

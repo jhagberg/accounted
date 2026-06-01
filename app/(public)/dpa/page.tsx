@@ -19,7 +19,7 @@ export default function DPAPage() {
             Personuppgiftsbitradesavtal (DPA)
           </h1>
           <p className="text-muted-foreground">
-            Enligt GDPR Art. 28 | Senast uppdaterad: 2026-03-05
+            Enligt GDPR Art. 28 | Senast uppdaterad: 2026-06-01
           </p>
         </div>
 
@@ -81,7 +81,9 @@ export default function DPAPage() {
               <li><strong>Oföränderlig bokföring:</strong> Bokförda verifikationer kan inte ändras eller
                 raderas (databasutlösare)</li>
               <li><strong>Säkerhetskopior:</strong> Kontinuerliga databaskopior med point-in-time-recovery</li>
-              <li><strong>EU-lagring:</strong> All primär datalagring sker i EU (eu-central-1)</li>
+              <li><strong>EU-lagring och EU-inferens:</strong> All primär datalagring sker i EU
+                (Supabase, eu-central-1). AI-inferens sker, när AI-funktioner är aktiverade, inom
+                EU via Amazon Bedrock (eu-north-1, Stockholm) — ingen överföring till tredje land</li>
             </ul>
           </CardContent>
         </Card>

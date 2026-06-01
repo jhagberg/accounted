@@ -213,6 +213,25 @@ export async function ingestTransactions(
     data?.forEach(r => existingExternalIds.add(r.external_id))
   }
 
+  // Resolve the cash account this batch settled on, once. Every row in one
+  // ingest call shares a settlement account: enable-banking calls this per
+  // account (settlementAccount = account.ledger_account), CSV import passes the
+  // single account the user picked. cash_accounts.ledger_account is unique per
+  // company, so this is a single-row lookup. Tolerate a miss — the row stays
+  // unbound (cash_account_id NULL) and reconciliation falls back to currency.
+  // We never auto-create a cash account here; that would race upsertFromPsd2's
+  // seed-promotion logic in lib/cash-accounts/service.ts.
+  let cashAccountId: string | null = null
+  if (options?.settlementAccount) {
+    const { data: ca } = await supabase
+      .from('cash_accounts')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('ledger_account', options.settlementAccount)
+      .maybeSingle()
+    cashAccountId = (ca?.id as string | undefined) ?? null
+  }
+
   // Track already-matched invoice IDs within this ingestion batch
   // to prevent suggesting the same invoice for multiple transactions
   const matchedInvoiceIds = new Set<string>()
@@ -270,6 +289,7 @@ export async function ingestTransactions(
         company_id: companyId,
         user_id: userId,
         bank_connection_id: raw.bank_connection_id || null,
+        cash_account_id: cashAccountId,
         external_id: raw.external_id,
         date: raw.date,
         description: description,

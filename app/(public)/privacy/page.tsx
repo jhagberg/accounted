@@ -18,7 +18,7 @@ export default function PrivacyPolicyPage() {
             Integritetspolicy
           </h1>
           <p className="text-muted-foreground">
-            Senast uppdaterad: 2026-05-28
+            Senast uppdaterad: 2026-06-01
           </p>
         </div>
 
@@ -119,6 +119,21 @@ export default function PrivacyPolicyPage() {
                     <td className="py-2">EU-baserad</td>
                   </tr>
                   <tr className="border-b">
+                    <td className="py-2 pr-4 font-medium">Amazon Web Services (AWS)</td>
+                    <td className="py-2 pr-4">
+                      AI-inferens (kategorisering samt dokument- och
+                      kvittotolkning) via Amazon Bedrock. Bearbetar bokföringsdata
+                      och uppladdade underlag — endast när AI-funktioner är
+                      aktiverade.
+                    </td>
+                    <td className="py-2 pr-4">EU (eu-north-1, Stockholm)</td>
+                    <td className="py-2">
+                      EU-baserad inferens — ingen tredjelandsöverföring. DPA, SCC
+                      och DPF-certifiering. Prompter lagras ej efter anropet och
+                      används ej till modellträning.
+                    </td>
+                  </tr>
+                  <tr className="border-b">
                     <td className="py-2 pr-4 font-medium">Resend</td>
                     <td className="py-2 pr-4">Transaktionell e-postleverans</td>
                     <td className="py-2 pr-4">USA</td>
@@ -139,8 +154,12 @@ export default function PrivacyPolicyPage() {
             </div>
 
             <p className="mt-4 text-sm text-muted-foreground">
-              AI-funktioner (Anthropic, OpenAI) kräver separat samtycke före aktivering.
-              Data skickas först när du aktivt godkänner användningen.
+              AI-funktioner är frivilliga och kräver separat samtycke före
+              aktivering — data skickas först när du aktivt godkänner
+              användningen. AI:t använder Anthropics Claude-modeller men körs
+              inom Amazon Bedrock i EU (eu-north-1, Stockholm); datan lämnar
+              alltså inte EU och delas inte med Anthropic. Kärntjänsten
+              (bokföring, fakturor, moms och rapporter) fungerar fullt ut utan AI.
             </p>
           </CardContent>
         </Card>
@@ -154,6 +173,8 @@ export default function PrivacyPolicyPage() {
               Vissa underbiträden är baserade i USA. För dessa överföringar används EU-kommissionens
               standardavtalsklausuler (SCCs) som skyddsmekanism i enlighet med GDPR kapitel V.
               All primär datalagring (databas, filer) sker inom EU via Supabase (eu-central-1).
+              Även AI-inferens sker inom EU (Amazon Bedrock, eu-north-1) och innebär ingen
+              överföring till tredje land.
             </p>
           </CardContent>
         </Card>

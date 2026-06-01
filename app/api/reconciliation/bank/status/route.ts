@@ -23,7 +23,7 @@ export async function GET(request: Request) {
   // produces nonsense.
   const { data: cashAccount } = await supabase
     .from('cash_accounts')
-    .select('currency')
+    .select('id, currency')
     .eq('company_id', companyId)
     .eq('ledger_account', accountNumber)
     .maybeSingle()
@@ -36,6 +36,7 @@ export async function GET(request: Request) {
   }
 
   const currency = (cashAccount?.currency as string | undefined) ?? 'SEK'
+  const cashAccountId = cashAccount?.id as string | undefined
 
   const status = await getReconciliationStatus(
     supabase,
@@ -44,6 +45,7 @@ export async function GET(request: Request) {
     dateTo,
     accountNumber,
     currency,
+    cashAccountId,
   )
 
   return NextResponse.json({ data: status })

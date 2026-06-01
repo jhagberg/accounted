@@ -402,6 +402,12 @@ export interface Transaction {
   bank_connection_id: string | null
   external_id: string | null  // For deduplication
 
+  // The cash account (cash_accounts row) this transaction settled on. Drives
+  // per-account bank reconciliation isolation and the correct bank leg when
+  // booking. Null on legacy/unresolved rows — callers fall back to currency.
+  // See 20260606120000_transactions_cash_account_id.sql.
+  cash_account_id: string | null
+
   // Details
   date: string
   description: string  // Mutable working title — user-editable while unbooked (see PATCH /api/transactions/[id])

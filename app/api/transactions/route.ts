@@ -18,28 +18,39 @@ export async function GET(request: Request) {
   const unmatched = searchParams.get('unmatched') === 'true'
   const reconciled = searchParams.get('reconciled') === 'true'
   const currency = searchParams.get('currency') || undefined
+  // currency is interpolated into the PostgREST .or() filter below, so reject
+  // anything that isn't a 3-letter ISO code. RLS still scopes results to the
+  // company, but an unsanitized value could otherwise malform or widen the
+  // filter (PostgREST filter injection).
+  if (currency && !/^[A-Z]{3}$/.test(currency)) {
+    return NextResponse.json({ error: 'Ogiltig valutakod' }, { status: 400 })
+  }
   const dateFrom = searchParams.get('date_from') || undefined
   const dateTo = searchParams.get('date_to') || undefined
   // When set, return only ignored rows — used by the reconciliation view to
   // surface a "Visa ignorerade" undo list. The default (no param) behaviour
   // continues to exclude ignored rows from unmatched results.
   const onlyIgnored = searchParams.get('only_ignored') === 'true'
-  // account_number is accepted for API symmetry with the reconciliation status
-  // endpoint; transactions don't carry a cash_account FK today (PSD2 account
-  // identity is embedded in external_id), so we use it to derive a default
-  // currency when the caller didn't supply one. Anything more precise needs
-  // the cash_account_id backfill tracked as Tier 4.
+  // account_number selects which cash account to scope to. We resolve it to a
+  // cash_accounts.id (ledger_account is unique per company) and scope
+  // transactions by that id, falling back to currency for legacy rows whose
+  // cash_account_id hasn't been backfilled yet. This is what stops two
+  // same-currency accounts from showing each other's transactions.
   const accountNumberParam = searchParams.get('account_number') || undefined
 
   let derivedCurrency = currency
-  if (!derivedCurrency && accountNumberParam) {
+  let cashAccountId: string | undefined
+  if (accountNumberParam) {
     const { data: cashAccount } = await supabase
       .from('cash_accounts')
-      .select('currency')
+      .select('id, currency')
       .eq('company_id', companyId)
       .eq('ledger_account', accountNumberParam)
       .maybeSingle()
-    if (cashAccount?.currency) derivedCurrency = cashAccount.currency as string
+    if (cashAccount) {
+      cashAccountId = cashAccount.id as string
+      if (!derivedCurrency && cashAccount.currency) derivedCurrency = cashAccount.currency as string
+    }
   }
 
   let query = supabase
@@ -60,7 +71,17 @@ export async function GET(request: Request) {
 
   if (onlyIgnored) query = query.eq('is_ignored', true)
 
-  if (derivedCurrency) query = query.eq('currency', derivedCurrency)
+  // Scope to the selected cash account. With a resolved id, match that account
+  // OR legacy NULL rows of the same currency (so nothing disappears mid-
+  // backfill). With only a currency (no account), filter by currency. With
+  // neither (e.g. the company-wide only_ignored recovery list), no scope.
+  if (cashAccountId) {
+    query = query.or(
+      `cash_account_id.eq.${cashAccountId},and(cash_account_id.is.null,currency.eq.${derivedCurrency ?? 'SEK'})`,
+    )
+  } else if (derivedCurrency) {
+    query = query.eq('currency', derivedCurrency)
+  }
   if (dateFrom) query = query.gte('date', dateFrom)
   if (dateTo) query = query.lte('date', dateTo)
 
