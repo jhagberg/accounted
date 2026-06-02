@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
@@ -15,6 +15,7 @@ import { formatDate } from '@/lib/utils'
 import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 import { AccountNumber } from '@/components/ui/account-number'
 import { useCompany } from '@/contexts/CompanyContext'
+import { useSettings } from '@/components/settings/useSettings'
 import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
 import { ReportDateRange, type DateRangeValue } from '@/components/common/ReportDateRange'
 import { ReportsNav } from '@/components/reports/ReportsNav'
@@ -171,14 +172,6 @@ export default function ReportsPage() {
           />
         )}
       </div>
-      <p className="text-sm text-muted-foreground">
-        {t('sie_moved_hint')}{' '}
-        <Link href="/import?view=export#sie-export" className="text-foreground underline underline-offset-4 decoration-muted-foreground/40 hover:decoration-foreground">
-          {t('sie_moved_link')}
-        </Link>
-        .
-      </p>
-
       {isLoadingInit ? (
         <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -247,7 +240,12 @@ export default function ReportsPage() {
             {activeTab === 'balance-sheet' && (
               <BalanceSheetView periodId={selectedPeriod} dateRange={dateRange} onNavigateToAccount={navigateToAccount} />
             )}
-            {activeTab === 'vat-declaration' && <VatDeclarationView />}
+            {activeTab === 'vat-declaration' && (
+              <VatDeclarationView
+                fiscalPeriodId={selectedPeriod}
+                fiscalPeriodBounds={selectedPeriodBounds}
+              />
+            )}
             {activeTab === 'periodisk-sammanstallning' && <PeriodiskSammanstallningView />}
             {isEnskildFirma && activeTab === 'ne-declaration' && (
               <NEDeclarationView periodId={selectedPeriod} />
@@ -1273,7 +1271,18 @@ function ReportSectionTable({
   )
 }
 
-function VatDeclarationView() {
+// Carries the selected fiscal period into the ruta drill-down rows so their
+// source-verifikat query matches the report's period. Only set for yearly
+// (räkenskapsår); undefined for monthly/quarterly (calendar periods).
+const VatDrillContext = React.createContext<{ fiscalPeriodId?: string }>({})
+
+function VatDeclarationView({
+  fiscalPeriodId,
+  fiscalPeriodBounds,
+}: {
+  fiscalPeriodId: string
+  fiscalPeriodBounds: { start: string; end: string } | null
+}) {
   const currentYear = new Date().getFullYear()
   const currentMonth = new Date().getMonth() + 1
   const currentQuarter = Math.ceil(currentMonth / 3)
@@ -1284,6 +1293,25 @@ function VatDeclarationView() {
   const [data, setData] = useState<VatDeclaration | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Default the periodicity to the company's configured VAT reporting period
+  // (moms_period in Inställningar) so the picker mirrors the setting instead of
+  // always starting on quarterly. Applied once per company the first time its
+  // settings load; a later manual change to the picker is preserved, and a
+  // company switch re-applies the new company's setting. `useSettings` only
+  // refetches when the active company changes, so this never clobbers a manual
+  // selection mid-session.
+  const { settings } = useSettings()
+  const appliedForCompany = useRef<string | null>(null)
+  useEffect(() => {
+    const momsPeriod = settings?.moms_period
+    const companyId = settings?.company_id
+    if (!momsPeriod || !companyId) return
+    if (appliedForCompany.current === companyId) return
+    appliedForCompany.current = companyId
+    setPeriodType(momsPeriod)
+    // `period` is reset to a sensible value by the periodType effect below.
+  }, [settings])
 
   // Generate year options (last 5 years)
   const yearOptions = Array.from({ length: 5 }, (_, i) => currentYear - i)
@@ -1331,12 +1359,26 @@ function VatDeclarationView() {
     }
   }, [periodType, currentMonth, currentQuarter])
 
+  // Annual VAT (helårsmoms) is reported per räkenskapsår, not per calendar year.
+  // For yearly we pass the selected fiscal period so the API uses its actual
+  // bounds (handles extended/shortened years); monthly/quarterly stay calendar.
+  const isYearly = periodType === 'yearly'
+  const vatQueryString = () => {
+    const params = new URLSearchParams({
+      periodType,
+      year: String(year),
+      period: String(period),
+    })
+    if (isYearly && fiscalPeriodId) params.set('fiscal_period_id', fiscalPeriodId)
+    return params.toString()
+  }
+
   const fetchDeclaration = async () => {
     setLoading(true)
     setError(null)
     try {
       const res = await fetch(
-        `/api/reports/vat-declaration?periodType=${periodType}&year=${year}&period=${period}`
+        `/api/reports/vat-declaration?${vatQueryString()}`
       )
       const result = await res.json()
       if (result.error) {
@@ -1352,12 +1394,13 @@ function VatDeclarationView() {
   }
 
   return (
+    <VatDrillContext.Provider value={{ fiscalPeriodId: isYearly ? fiscalPeriodId : undefined }}>
     <div className="space-y-4">
       <div className="flex justify-end gap-2">
         <Button
           variant="outline"
           size="sm"
-          onClick={() => window.open(`/api/reports/vat-declaration/xlsx?periodType=${periodType}&year=${year}&period=${period}`, '_blank')}
+          onClick={() => window.open(`/api/reports/vat-declaration/xlsx?${vatQueryString()}`, '_blank')}
         >
           <FileSpreadsheet className="h-4 w-4 mr-2" />
           Ladda ner Excel
@@ -1387,34 +1430,49 @@ function VatDeclarationView() {
                 <option value="yearly">Årsvis</option>
               </select>
             </div>
-            <div>
-              <Label>År</Label>
-              <select
-                value={year}
-                onChange={(e) => setYear(parseInt(e.target.value))}
-                className="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                {yearOptions.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <Label>Period</Label>
-              <select
-                value={period}
-                onChange={(e) => setPeriod(parseInt(e.target.value))}
-                className="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                {getPeriodOptions().map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {isYearly ? (
+              // Annual VAT covers the selected räkenskapsår — driven by the
+              // fiscal-year picker at the top of the page, not a calendar year.
+              <div>
+                <Label>Räkenskapsår</Label>
+                <div className="mt-1 rounded-md border border-input bg-muted/40 px-3 py-2 text-sm tabular-nums">
+                  {fiscalPeriodBounds
+                    ? `${formatDate(fiscalPeriodBounds.start)} – ${formatDate(fiscalPeriodBounds.end)}`
+                    : '—'}
+                </div>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <Label>År</Label>
+                  <select
+                    value={year}
+                    onChange={(e) => setYear(parseInt(e.target.value))}
+                    className="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    {yearOptions.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label>Period</Label>
+                  <select
+                    value={period}
+                    onChange={(e) => setPeriod(parseInt(e.target.value))}
+                    className="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    {getPeriodOptions().map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
             <Button onClick={fetchDeclaration} disabled={loading}>
               {loading ? 'Laddar...' : 'Hämta'}
             </Button>
@@ -1646,13 +1704,29 @@ function VatDeclarationView() {
         </Card>
       )}
     </div>
+    </VatDrillContext.Provider>
   )
 }
 
-function makeVatFetcher(ruta: string, periodType: VatPeriodType, year: number, period: number): ReportSourceFetcher {
+function makeVatFetcher(
+  ruta: string,
+  periodType: VatPeriodType,
+  year: number,
+  period: number,
+  fiscalPeriodId?: string,
+): ReportSourceFetcher {
   return async () => {
+    const params = new URLSearchParams({
+      periodType,
+      year: String(year),
+      period: String(period),
+    })
+    // Yearly drill-down resolves against the räkenskapsår, matching the report.
+    if (periodType === 'yearly' && fiscalPeriodId) {
+      params.set('fiscal_period_id', fiscalPeriodId)
+    }
     const res = await fetch(
-      `/api/reports/vat-declaration/ruta/${encodeURIComponent(ruta)}/sources?periodType=${periodType}&year=${year}&period=${period}`
+      `/api/reports/vat-declaration/ruta/${encodeURIComponent(ruta)}/sources?${params.toString()}`
     )
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Kunde inte hämta verifikat')
@@ -1680,10 +1754,11 @@ function VatRutaRow({
   year?: number
   period?: number
 }) {
+  const { fiscalPeriodId } = React.useContext(VatDrillContext)
   const canDrill = periodType !== undefined && year !== undefined && period !== undefined
   const fetcher = React.useMemo(
-    () => (canDrill ? makeVatFetcher(ruta, periodType!, year!, period!) : null),
-    [canDrill, ruta, periodType, year, period]
+    () => (canDrill ? makeVatFetcher(ruta, periodType!, year!, period!, fiscalPeriodId) : null),
+    [canDrill, ruta, periodType, year, period, fiscalPeriodId]
   )
   // Hooks must be called unconditionally — provide a noop fetcher when drill
   // is disabled. The early-return for zero rows lives below the hooks.
