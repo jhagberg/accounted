@@ -88,7 +88,7 @@ export function buildErrorReferenceMd(): string {
   lines.push('      "tool": "fiscal_periods.unlock"')
   lines.push('    },')
   lines.push('    "details": { "fiscal_period_id": "..." },')
-  lines.push('    "docs_url": "https://gnubok.app/docs/api/errors#period_locked"')
+  lines.push('    "docs_url": "https://app.gnubok.se/docs/api/errors#period_locked"')
   lines.push('  },')
   lines.push('  "meta": { "request_id": "req_...", "api_version": "..." }')
   lines.push('}')

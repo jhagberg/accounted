@@ -5,7 +5,7 @@ export const CONNECT_CLAUDE_MD = `# Connect with Claude
 Accounted ships an [MCP](https://modelcontextprotocol.io) server that exposes the full bookkeeping engine — 90+ tools — to any MCP client. The endpoint is:
 
 \`\`\`
-https://gnubok.app/api/extensions/ext/mcp-server/mcp
+https://app.gnubok.se/api/extensions/ext/mcp-server/mcp
 \`\`\`
 
 There are two ways to connect, depending on your client. Both reach the same tools and the same approval model: read tools answer immediately, write tools (categorise, mark paid, create voucher, year-end) **stage a pending operation** that you confirm in chat or in the **/pending** web UI before anything is booked.
@@ -17,7 +17,7 @@ Best for most users. No API key to manage — you authorise Accounted the same w
 1. In **claude.ai** (Settings → Connectors) or **Claude Desktop** (Settings → Connectors → Add custom connector), choose **Add custom connector**.
 2. Paste the connector URL:
    \`\`\`
-   https://gnubok.app/api/extensions/ext/mcp-server/mcp
+   https://app.gnubok.se/api/extensions/ext/mcp-server/mcp
    \`\`\`
 3. Claude opens the Accounted OAuth 2.1 consent screen. Sign in and pick the company you want Claude to act on.
 4. On the consent screen you grant **read-only scopes by default** (list invoices, read reports, compute VAT). Write scopes (create invoice, categorise, book vouchers, run year-end) are **listed separately and must be ticked explicitly** — leave them unchecked for a read-only review session.

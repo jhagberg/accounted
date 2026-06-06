@@ -15,7 +15,7 @@ This is the operational companion to the [Webhooks concept page](/docs/api/webho
 The response includes the HMAC signing secret **exactly once**. Capture it immediately and store it on the receiver side as an environment variable.
 
 \`\`\`bash
-curl "https://gnubok.app/api/v1/companies/$COMPANY_ID/webhooks" \\
+curl "https://app.gnubok.se/api/v1/companies/$COMPANY_ID/webhooks" \\
   -H "Authorization: Bearer gnubok_sk_test_..." \\
   -H "Idempotency-Key: $(uuidgen)" \\
   -H "Content-Type: application/json" \\
@@ -50,7 +50,7 @@ Response:
 
 ## 2. Implement signature verification
 
-Use the [Node](https://gnubok.app/docs/api/webhooks#nodejs) or [Python](https://gnubok.app/docs/api/webhooks#python) sample on the concept page. The critical detail: capture the **raw request body** before any framework JSON-parses it. Re-serialising the body produces different bytes and the signature won't match.
+Use the [Node](https://app.gnubok.se/docs/api/webhooks#nodejs) or [Python](https://app.gnubok.se/docs/api/webhooks#python) sample on the concept page. The critical detail: capture the **raw request body** before any framework JSON-parses it. Re-serialising the body produces different bytes and the signature won't match.
 
 For an Express handler, that means \`express.raw({ type: 'application/json' })\` — NOT the default \`express.json()\` middleware. For FastAPI / Flask use \`request.get_data()\`. For Cloudflare Workers use \`await request.text()\` BEFORE \`request.json()\`.
 
@@ -59,7 +59,7 @@ For an Express handler, that means \`express.raw({ type: 'application/json' })\`
 The \`:test\` verb enqueues a synthetic \`webhook.test\` delivery without driving real state. The dispatcher sends it on the next per-minute cron tick.
 
 \`\`\`bash
-curl -X POST "https://gnubok.app/api/v1/companies/$COMPANY_ID/webhooks/$WEBHOOK_ID/test" \\
+curl -X POST "https://app.gnubok.se/api/v1/companies/$COMPANY_ID/webhooks/$WEBHOOK_ID/test" \\
   -H "Authorization: Bearer gnubok_sk_test_..."
 \`\`\`
 
@@ -90,7 +90,7 @@ If your receiver returns 2xx, the delivery moves to \`delivered\`. If it returns
 ## 4. Inspect the delivery
 
 \`\`\`bash
-curl "https://gnubok.app/api/v1/companies/$COMPANY_ID/webhooks/$WEBHOOK_ID/deliveries?delivery_id=$DELIVERY_ID" \\
+curl "https://app.gnubok.se/api/v1/companies/$COMPANY_ID/webhooks/$WEBHOOK_ID/deliveries?delivery_id=$DELIVERY_ID" \\
   -H "Authorization: Bearer gnubok_sk_test_..."
 \`\`\`
 
@@ -119,7 +119,7 @@ Response carries the captured response status and body (truncated to 4 KB), whic
 Now mark a real invoice paid (or use any of the [event-emitting endpoints](/docs/api/webhooks#event-types)). The webhook handler picks up the emission and enqueues a delivery within the same request cycle.
 
 \`\`\`bash
-curl -X POST "https://gnubok.app/api/v1/companies/$COMPANY_ID/invoices/$INVOICE_ID/mark-paid" \\
+curl -X POST "https://app.gnubok.se/api/v1/companies/$COMPANY_ID/invoices/$INVOICE_ID/mark-paid" \\
   -H "Authorization: Bearer gnubok_sk_test_..." \\
   -H "Idempotency-Key: $(uuidgen)" \\
   -H "Content-Type: application/json" \\
@@ -155,7 +155,7 @@ This pattern: a unique constraint on \`delivery_id\`, an INSERT-on-conflict-do-n
 When a delivery exhausts its retries it's marked \`dead\`. After fixing the receiver, replay individual deliveries with:
 
 \`\`\`bash
-curl -X POST "https://gnubok.app/api/v1/webhook-deliveries/$DELIVERY_ID/retry" \\
+curl -X POST "https://app.gnubok.se/api/v1/webhook-deliveries/$DELIVERY_ID/retry" \\
   -H "Authorization: Bearer gnubok_sk_test_..."
 \`\`\`
 
@@ -171,7 +171,7 @@ After:
 …the webhook is automatically disabled (\`active=false\`, \`disabled_reason\` set). Re-enable with:
 
 \`\`\`bash
-curl -X PATCH "https://gnubok.app/api/v1/companies/$COMPANY_ID/webhooks/$WEBHOOK_ID" \\
+curl -X PATCH "https://app.gnubok.se/api/v1/companies/$COMPANY_ID/webhooks/$WEBHOOK_ID" \\
   -H "Authorization: Bearer gnubok_sk_test_..." \\
   -H "Content-Type: application/json" \\
   -d '{ "active": true }'
