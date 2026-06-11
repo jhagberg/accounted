@@ -11,6 +11,7 @@ import { registerEndpoint } from '@/lib/api/v1/registry'
 import { withApiV1 } from '@/lib/api/v1/with-api-v1'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 import { MatchSupplierInvoiceSchema } from '@/lib/api/schemas'
+import { cancelOrphanedPaymentEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
 import {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
@@ -350,6 +351,15 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       .select('id')
     if (updateInvErr) return v1ErrorResponse(updateInvErr, txLog, { requestId: ctx.requestId })
     if (!updatedRows || updatedRows.length === 0) {
+      // CAS guard: the invoice was settled by a concurrent request between
+      // our read and write. The payment voucher we just posted belongs to no
+      // payment — cancel it and document the gap (mirrors mark-paid).
+      if (journalEntryId) {
+        await cancelOrphanedPaymentEntry(
+          ctx.supabase, ctx.companyId!, ctx.userId, journalEntryId,
+          'Automatiskt makulerad: dubblettbokning förhindrad av samtidighetsskydd',
+        )
+      }
       return v1ErrorResponseFromCode('MATCH_SI_NOT_OPEN', txLog, {
         requestId: ctx.requestId,
       })

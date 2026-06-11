@@ -42,6 +42,8 @@ function createQueueMockSupabase() {
   // Captures .insert() payloads keyed by table, so tests can assert what was
   // written (e.g. cash_account_id stamping).
   const inserts: Record<string, unknown[]> = {}
+  // Same for .update() payloads (e.g. supplier-invoice suggestion linking).
+  const updates: Record<string, unknown[]> = {}
 
   /**
    * Push one or more results onto the queue.
@@ -66,6 +68,12 @@ function createQueueMockSupabase() {
             return buildChain(table)
           }
         }
+        if (prop === 'update') {
+          return (payload: unknown) => {
+            ;(updates[table] ??= []).push(payload)
+            return buildChain(table)
+          }
+        }
         return (..._args: unknown[]) => buildChain(table)
       },
     }
@@ -77,7 +85,7 @@ function createQueueMockSupabase() {
     rpc: vi.fn().mockImplementation(() => buildChain('rpc')),
   }
 
-  return { supabase, enqueue, inserts }
+  return { supabase, enqueue, inserts, updates }
 }
 
 // ---------------------------------------------------------------------------
@@ -638,6 +646,58 @@ describe('ingestTransactions', () => {
       expect.objectContaining({ id: 'tx-income' }),
       0.50
     )
+  })
+
+  // -----------------------------------------------------------------------
+  // 4b. Supplier-invoice match at sync is ALWAYS a suggestion, never a hard
+  //     link. Regression: a high-confidence hit used to set
+  //     supplier_invoice_id directly — with no payment voucher booked — which
+  //     then BLOCKED the match route (MATCH_SI_TX_ALREADY_LINKED), stranding
+  //     the bank line with no path to a payment booking (June 2026 incident:
+  //     RosholmDell 18299).
+  // -----------------------------------------------------------------------
+  it('demotes a high-confidence supplier-invoice match to potential_supplier_invoice_id', async () => {
+    const { supabase, enqueue, updates } = createQueueMockSupabase()
+    const raw = makeRaw({
+      date: '2026-06-08',
+      amount: -29890,
+      description: 'RosholmDell Advo BG 0000007746514 Bg-bet. via internet',
+    })
+    const inserted = makeTransaction({
+      id: 'tx-rd',
+      amount: -29890,
+      date: '2026-06-08',
+      external_id: raw.external_id,
+    })
+    // One unpaid invoice, exact amount, tx date inside the credit window →
+    // Pass-3 amount_date match at 0.85, unambiguous (previously: hard link).
+    const supplierInvoice = {
+      id: 'si-rd',
+      status: 'registered',
+      total: 29890,
+      remaining_amount: 29890,
+      invoice_date: '2026-06-05',
+      due_date: '2026-07-05',
+      payment_reference: null,
+      supplier: { name: 'RosholmDell Advokatbyrå AB' },
+    }
+
+    enqueue({ data: [], error: null }) // booked map
+    enqueue({ data: [], error: null }) // unbooked bank-synced map
+    enqueue({ data: [supplierInvoice], error: null }) // supplier invoices pool
+    enqueue({ data: [], error: null }) // external_id dedup
+    enqueue({ data: inserted, error: null }) // insert
+    enqueue({ data: null, error: null }) // suggestion update
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.imported).toBe(1)
+    expect(result.auto_matched_invoices).toBe(1)
+    const txUpdates = (updates['transactions'] ?? []) as Record<string, unknown>[]
+    expect(txUpdates).toHaveLength(1)
+    expect(txUpdates[0]).toEqual({ potential_supplier_invoice_id: 'si-rd' })
+    // The hard link is reserved for completed matches (payment voucher booked).
+    expect(txUpdates.some((u) => 'supplier_invoice_id' in u)).toBe(false)
   })
 
   // -----------------------------------------------------------------------

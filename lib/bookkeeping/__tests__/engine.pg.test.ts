@@ -69,4 +69,33 @@ describe('engine.pg — triggers & RPCs that mocks cannot catch', () => {
       ),
     ).rejects.toThrow(/Cannot modify a posted journal entry/i)
   })
+
+  it('next_voucher_number falls back to the company owner when auth.uid() is NULL', async () => {
+    // The superuser pg connection has no Supabase JWT, so auth.uid() IS NULL —
+    // exactly the service-role shape (repair scripts, cron) that used to fail
+    // the voucher_sequences user_id NOT NULL check before ON CONFLICT could
+    // arbitrate (commit_journal_entry got the fallback in 20260421170500;
+    // next_voucher_number — the storno/correction path — did not until
+    // 20260611130000).
+    const { userId, companyId, fiscalPeriodId } = await seedCompany()
+
+    const first = await getPool().query<{ n: number }>(
+      `SELECT public.next_voucher_number($1::uuid, $2::uuid) AS n`,
+      [companyId, fiscalPeriodId],
+    )
+    const second = await getPool().query<{ n: number }>(
+      `SELECT public.next_voucher_number($1::uuid, $2::uuid) AS n`,
+      [companyId, fiscalPeriodId],
+    )
+    expect(first.rows[0]!.n).toBe(1)
+    expect(second.rows[0]!.n).toBe(2)
+
+    // Attribution on the sequence row falls back to companies.created_by.
+    const seq = await getPool().query<{ user_id: string }>(
+      `SELECT user_id FROM public.voucher_sequences
+       WHERE company_id = $1::uuid AND fiscal_period_id = $2::uuid AND voucher_series = 'A'`,
+      [companyId, fiscalPeriodId],
+    )
+    expect(seq.rows[0]!.user_id).toBe(userId)
+  })
 })

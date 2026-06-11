@@ -97,7 +97,7 @@ registerEndpoint({
           voucher_series: 'A',
           voucher_number: 142,
           entry_date: '2026-05-12',
-          description: 'Levfaktura 2026-1234, Office Depot AB (ankomst 42)',
+          description: 'Levfaktura 2026-1234, Office Depot AB (ankomstnr 42)',
           status: 'posted',
           source_type: 'supplier_invoice_registered',
           created_at: '2026-05-13T15:00:00Z',

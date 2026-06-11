@@ -2682,6 +2682,8 @@
     "supplier_missing_description": "Select or create a supplier.",
     "invoice_number_missing_title": "Invoice number missing",
     "invoice_number_missing_description": "Enter the supplier's invoice number.",
+    "account_missing_title": "Account missing",
+    "account_missing_description": "Select an expense account for line {row}.",
     "expense_registered_title": "Expense registered",
     "invoice_registered_title": "Invoice registered",
     "arrival_number_label": "Arrival number: {number}",

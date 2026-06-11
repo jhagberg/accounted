@@ -449,46 +449,38 @@ export async function ingestTransactions(
         )
 
         if (match && !matchedSupplierInvoiceIds.has(match.supplierInvoice.id)) {
-          // Ambiguous amount_date hits (several same-amount invoices in-window)
-          // are demoted to suggestions — auto-linking the wrong one is worse
-          // than asking the user to pick.
+          // ALWAYS a suggestion (potential_supplier_invoice_id), never a hard
+          // link. supplier_invoice_id is reserved for completed matches — the
+          // match route books the payment voucher when it sets it. A sync-time
+          // hard link booked nothing, left the invoice open, and then BLOCKED
+          // the match route (MATCH_SI_TX_ALREADY_LINKED), stranding the
+          // transaction with no path to a payment voucher.
+          await supabase
+            .from('transactions')
+            .update({ potential_supplier_invoice_id: match.supplierInvoice.id })
+            .eq('id', newTransaction.id)
+
+          logMatchEvent(supabase, userId, newTransaction.id, 'auto_suggested', {
+            supplierInvoiceId: match.supplierInvoice.id,
+            matchConfidence: match.confidence,
+            matchMethod: match.matchMethod,
+          })
+
           if (match.confidence >= 0.85 && !match.ambiguous) {
-            // Auto-link at high confidence
-            await supabase
-              .from('transactions')
-              .update({ supplier_invoice_id: match.supplierInvoice.id })
-              .eq('id', newTransaction.id)
-
-            // Log the match THEN drain the pool (captures which invoice was matched)
-            logMatchEvent(supabase, userId, newTransaction.id, 'auto_suggested', {
-              supplierInvoiceId: match.supplierInvoice.id,
-              matchConfidence: match.confidence,
-              matchMethod: match.matchMethod,
-            })
-
-            // Drain the pool — prevents next transaction from matching same invoice
+            // High-confidence unambiguous hit: drain the pool so the next
+            // transaction can't claim the same invoice, and skip the mapping
+            // engine — auto-categorization would create an orphaned journal
+            // entry that conflicts with the eventual payment booking.
             unpaidSupplierInvoices = unpaidSupplierInvoices.filter(
               inv => inv.id !== match.supplierInvoice.id
             )
             matchedSupplierInvoiceIds.add(match.supplierInvoice.id)
 
             result.auto_matched_invoices++
-            // Skip mapping engine — transaction has a supplier invoice match
             continue
-          } else {
-            // Store as suggestion at lower confidence (0.70–0.85)
-            // Do NOT drain pool for suggestions — they are tentative
-            await supabase
-              .from('transactions')
-              .update({ potential_supplier_invoice_id: match.supplierInvoice.id })
-              .eq('id', newTransaction.id)
-
-            logMatchEvent(supabase, userId, newTransaction.id, 'auto_suggested', {
-              supplierInvoiceId: match.supplierInvoice.id,
-              matchConfidence: match.confidence,
-              matchMethod: match.matchMethod,
-            })
           }
+          // Lower confidence (0.70–0.85) or ambiguous: tentative — do NOT
+          // drain the pool.
         }
       } catch {
         // Non-critical — continue processing

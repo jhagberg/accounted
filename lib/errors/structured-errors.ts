@@ -519,6 +519,14 @@ const MATCH_SI: Record<string, StructuredErrorEntry> = {
     message_sv: 'Den här transaktionen är redan matchad mot leverantörsfakturan.',
     message_en: 'This transaction is already matched to this supplier invoice.',
   },
+  MATCH_SI_JE_FAILED: {
+    httpStatus: 500,
+    message_sv:
+      'Betalningsverifikationen kunde inte skapas. Matchningen avbröts — inga ändringar har sparats.',
+    message_en:
+      'Failed to create the payment voucher. The match was aborted — no changes were saved.',
+    retryable: true,
+  },
   MATCH_SI_RECORD_PAYMENT_FAILED: {
     httpStatus: 500,
     message_sv: 'Kunde inte registrera leverantörsfakturabetalningen.',

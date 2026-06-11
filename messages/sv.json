@@ -2682,6 +2682,8 @@
     "supplier_missing_description": "Välj eller skapa en leverantör.",
     "invoice_number_missing_title": "Fakturanummer saknas",
     "invoice_number_missing_description": "Ange leverantörens fakturanummer.",
+    "account_missing_title": "Konto saknas",
+    "account_missing_description": "Välj ett bokföringskonto för rad {row}.",
     "expense_registered_title": "Utlägg registrerat",
     "invoice_registered_title": "Faktura registrerad",
     "arrival_number_label": "Ankomstnummer: {number}",

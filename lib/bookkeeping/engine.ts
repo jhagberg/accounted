@@ -12,6 +12,7 @@ import {
   JournalEntryNotFoundError,
 } from '@/lib/bookkeeping/errors'
 import { resolveDefaultSeriesForSource } from '@/lib/bookkeeping/voucher-series-resolver'
+import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
 import { syncInvoiceStatusFromPaymentEntry, isPaymentSourceType } from '@/lib/bookkeeping/payment-sync'
 import { getActor } from '@/lib/bookkeeping/actor-context'
 import type {
@@ -239,11 +240,24 @@ export async function createDraftEntry(
   // Resolve account IDs
   const accountIdMap = await resolveAccountIds(supabase, companyId, input.lines)
 
-  // Validate all account numbers resolved to IDs
+  // Validate all account numbers resolved to IDs. Standard BAS accounts are
+  // seeded on demand before failing: a minimal chart routinely lacks accounts
+  // legitimate flows reach (3740 öresavrundning on the first sub-krona
+  // Bankgiro diff, 6580 on a first legal invoice), and throwing here turned
+  // those into dead ends. Non-BAS numbers and deliberately deactivated
+  // accounts still throw.
   const allAccountNumbers = [...new Set(input.lines.map(l => l.account_number))]
-  const missingAccounts = allAccountNumbers.filter(num => !accountIdMap.has(num))
+  let missingAccounts = allAccountNumbers.filter(num => !accountIdMap.has(num))
   if (missingAccounts.length > 0) {
-    throw new AccountsNotInChartError(missingAccounts)
+    const seeded = await backfillStandardBASAccounts(supabase, companyId, userId, missingAccounts)
+    if (seeded.length > 0) {
+      const refreshed = await resolveAccountIds(supabase, companyId, input.lines)
+      for (const [num, id] of refreshed) accountIdMap.set(num, id)
+      missingAccounts = allAccountNumbers.filter(num => !accountIdMap.has(num))
+    }
+    if (missingAccounts.length > 0) {
+      throw new AccountsNotInChartError(missingAccounts)
+    }
   }
 
   // Resolve voucher_series: explicit input wins; otherwise look up the

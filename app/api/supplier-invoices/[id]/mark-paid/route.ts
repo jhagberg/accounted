@@ -6,6 +6,7 @@ import {
   createSupplierInvoiceCashEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
+import { cancelOrphanedPaymentEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { validateBody } from '@/lib/api/validate'
@@ -234,27 +235,10 @@ export const POST = withRouteContext(
       // CAS guard: another request paid the invoice between our read and write.
       // Cancel the orphaned JE and document the voucher gap.
       if (journalEntryId) {
-        const { data: orphan } = await supabase
-          .from('journal_entries')
-          .select('fiscal_period_id, voucher_series, voucher_number')
-          .eq('id', journalEntryId)
-          .single()
-
-        await supabase
-          .from('journal_entries')
-          .update({ status: 'cancelled' })
-          .eq('id', journalEntryId)
-
-        if (orphan) {
-          await supabase.from('voucher_gap_explanations').insert({
-            company_id: companyId,
-            fiscal_period_id: orphan.fiscal_period_id,
-            voucher_series: orphan.voucher_series || 'A',
-            gap_number: orphan.voucher_number,
-            explanation: 'Automatiskt makulerad: dubblettbokning förhindrad av samtidighetsskydd',
-            created_by: user.id,
-          })
-        }
+        await cancelOrphanedPaymentEntry(
+          supabase, companyId!, user.id, journalEntryId,
+          'Automatiskt makulerad: dubblettbokning förhindrad av samtidighetsskydd',
+        )
       }
       return errorResponseFromCode('SI_PAID_ALREADY', opLog, {
         requestId,

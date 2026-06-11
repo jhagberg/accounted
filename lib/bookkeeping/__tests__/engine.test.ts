@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { validateBalance, getSwedishLocalDate, createDraftEntry, reverseEntry } from '../engine'
-import { BookkeepingDatabaseError } from '../errors'
+import { BookkeepingDatabaseError, AccountsNotInChartError } from '../errors'
 import type { CreateJournalEntryLineInput, JournalEntryStatus } from '@/types'
 
 // Mock Supabase client for createDraftEntry/reverseEntry tests
@@ -24,6 +24,13 @@ function createMockChain(overrides: Record<string, unknown> = {}) {
 // Mock event bus
 vi.mock('@/lib/events', () => ({
   eventBus: { emit: vi.fn().mockResolvedValue([]) },
+}))
+
+// Mock the on-demand BAS backfill — default: nothing seedable. Individual
+// tests override per scenario.
+const mockBackfill = vi.fn().mockResolvedValue([])
+vi.mock('@/lib/bookkeeping/account-backfill', () => ({
+  backfillStandardBASAccounts: (...args: unknown[]) => mockBackfill(...args),
 }))
 
 describe('validateBalance', () => {
@@ -352,5 +359,127 @@ describe('JournalEntryStatus type includes cancelled', () => {
   it('cancelled is a valid JournalEntryStatus value', () => {
     const status: JournalEntryStatus = 'cancelled'
     expect(['draft', 'posted', 'reversed', 'cancelled']).toContain(status)
+  })
+})
+
+describe('createDraftEntry — on-demand BAS account backfill', () => {
+  // Engine seeds standard BAS accounts missing from the chart instead of
+  // failing (June 2026 incident: 3740 öresavrundning missing → payment
+  // voucher dead end). Non-seedable numbers still throw.
+
+  beforeEach(() => {
+    mockBackfill.mockClear()
+  })
+
+  function buildSupabase(opts: { chartByCall: { account_number: string; id: string }[][] }) {
+    let chartCall = 0
+    return {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'fiscal_periods') {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                eq: vi.fn().mockReturnValue({
+                  single: vi.fn().mockResolvedValue({
+                    data: { name: 'FY 2026', period_start: '2026-01-01', period_end: '2026-12-31' },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          }
+        }
+        if (table === 'chart_of_accounts') {
+          const result = opts.chartByCall[Math.min(chartCall++, opts.chartByCall.length - 1)]
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                in: vi.fn().mockReturnValue({
+                  eq: vi.fn().mockResolvedValue({ data: result, error: null }),
+                }),
+              }),
+            }),
+          }
+        }
+        if (table === 'journal_entries') {
+          return {
+            insert: vi.fn().mockReturnValue({
+              select: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({
+                  data: { id: 'entry-1', status: 'draft' },
+                  error: null,
+                }),
+              }),
+            }),
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({
+                  data: { id: 'entry-1', status: 'draft', lines: [] },
+                  error: null,
+                }),
+              }),
+            }),
+          }
+        }
+        if (table === 'journal_entry_lines') {
+          return { insert: vi.fn().mockResolvedValue({ error: null }) }
+        }
+        return createMockChain()
+      }),
+    }
+  }
+
+  const LINES: CreateJournalEntryLineInput[] = [
+    { account_number: '2440', debit_amount: 11231.25, credit_amount: 0 },
+    { account_number: '1930', debit_amount: 0, credit_amount: 11231 },
+    { account_number: '3740', debit_amount: 0, credit_amount: 0.25 },
+  ]
+
+  it('seeds a missing standard BAS account and proceeds', async () => {
+    mockBackfill.mockResolvedValue(['3740'])
+    const supabase = buildSupabase({
+      chartByCall: [
+        // First resolution: 3740 missing
+        [{ account_number: '2440', id: 'acc-1' }, { account_number: '1930', id: 'acc-2' }],
+        // Re-resolution after backfill: all present
+        [
+          { account_number: '2440', id: 'acc-1' },
+          { account_number: '1930', id: 'acc-2' },
+          { account_number: '3740', id: 'acc-3' },
+        ],
+      ],
+    })
+
+    const entry = await createDraftEntry(supabase as never, 'company-1', 'user-1', {
+      fiscal_period_id: 'period-1',
+      entry_date: '2026-06-08',
+      description: 'Utbetalning leverantörsfaktura',
+      source_type: 'supplier_invoice_paid',
+      lines: LINES,
+    })
+
+    expect(entry.id).toBe('entry-1')
+    expect(mockBackfill).toHaveBeenCalledWith(expect.anything(), 'company-1', 'user-1', ['3740'])
+  })
+
+  it('still throws AccountsNotInChartError when the account is not seedable', async () => {
+    mockBackfill.mockResolvedValue([])
+    const supabase = buildSupabase({
+      chartByCall: [
+        [{ account_number: '2440', id: 'acc-1' }, { account_number: '1930', id: 'acc-2' }],
+      ],
+    })
+
+    await expect(
+      createDraftEntry(supabase as never, 'company-1', 'user-1', {
+        fiscal_period_id: 'period-1',
+        entry_date: '2026-06-08',
+        description: 'Utbetalning leverantörsfaktura',
+        source_type: 'supplier_invoice_paid',
+        lines: LINES,
+      })
+    ).rejects.toThrow(AccountsNotInChartError)
+
+    expect(mockBackfill).toHaveBeenCalledTimes(1)
   })
 })

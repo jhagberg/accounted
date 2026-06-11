@@ -4,6 +4,7 @@ import {
   createMockRouteParams,
   parseJsonResponse,
 } from '@/tests/helpers'
+import { AccountsNotInChartError } from '@/lib/bookkeeping/errors'
 
 const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
 vi.mock('@/lib/supabase/server', () => ({
@@ -381,5 +382,56 @@ describe('POST /api/transactions/[id]/match-supplier-invoice — cash method + F
     expect(mockCreateJournalEntry).not.toHaveBeenCalled() // no 3740 clearing entry
     expect(body.invoice_status).toBe('partially_paid')
     expect(body.remaining_amount).toBe(0.25)
+  })
+})
+
+describe('POST /api/transactions/[id]/match-supplier-invoice — payment JE failure aborts', () => {
+  // Regression: the route used to catch a JE-creation failure and proceed —
+  // marking the invoice paid with NO payment voucher. That half-state is
+  // unrecoverable (mark-paid rejects 'paid', match rejects linked txs), so a
+  // failed voucher must now fail the whole match before any state mutation.
+
+  it('returns 500 MATCH_SI_JE_FAILED and mutates nothing when the engine throws (pure-SEK path)', async () => {
+    // Only the 3 reads enqueued — if the route (incorrectly) proceeded to the
+    // invoice update, the empty queue would surface as MATCH_SI_NOT_OPEN.
+    enqueueHappyPath({
+      transaction: { amount: -29890, currency: 'SEK' },
+      invoice: { currency: 'SEK', remaining_amount: 29890 },
+    })
+    mockCreateJournalEntry.mockRejectedValue(new Error('boom'))
+
+    const res = await POST(makeReq(), createMockRouteParams({ id: TX_UUID }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(res)
+    expect(status).toBe(500)
+    expect(body.error.code).toBe('MATCH_SI_JE_FAILED')
+  })
+
+  it('maps a bookkeeping error (missing account) to its structured code and aborts', async () => {
+    enqueueHappyPath({
+      transaction: { amount: -11231, currency: 'SEK' },
+      invoice: { currency: 'SEK', remaining_amount: 11231.25 },
+    })
+    mockCreateJournalEntry.mockRejectedValue(new AccountsNotInChartError(['3740']))
+
+    const res = await POST(makeReq(), createMockRouteParams({ id: TX_UUID }))
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; details?: { account_numbers?: string[] } }
+    }>(res)
+    expect(status).toBeGreaterThanOrEqual(400)
+    expect(body.error.code).toBe(new AccountsNotInChartError(['3740']).code)
+    expect(body.error.details?.account_numbers).toEqual(['3740'])
+  })
+
+  it('returns MATCH_SI_JE_FAILED when the engine resolves without an entry', async () => {
+    enqueueHappyPath({
+      transaction: { amount: -100, currency: 'SEK' },
+      invoice: { currency: 'SEK', remaining_amount: 100 },
+    })
+    mockCreateJournalEntry.mockResolvedValue(null)
+
+    const res = await POST(makeReq(), createMockRouteParams({ id: TX_UUID }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(res)
+    expect(status).toBe(500)
+    expect(body.error.code).toBe('MATCH_SI_JE_FAILED')
   })
 })
