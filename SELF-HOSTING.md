@@ -125,6 +125,12 @@ To build the Docker image locally instead of pulling from GHCR:
 docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
 ```
 
+The locally-built image runs **unprivileged** (`USER nextjs`): the entrypoint
+populates the `.next`/`public` tmpfs mounts and substitutes the `NEXT_PUBLIC_*`
+placeholders as the `nextjs` user, so the container needs no Linux capabilities
+and runs as-is under the hardened compose defaults (`cap_drop: ALL`,
+`read_only: true`).
+
 ### Custom Port
 
 Set `PORT` in your `.env` or environment to change the host port (the container always listens on 3000 internally):
@@ -264,6 +270,100 @@ Check the [release notes](https://github.com/erp-mafia/gnubok/releases) for migr
 ```
 
 The Next.js app is stateless — all data lives in Supabase. The Docker entrypoint injects your `NEXT_PUBLIC_*` environment variables into the pre-built JS bundles at container startup, so a single image works with any Supabase project.
+
+## Fully Self-Hosted (No Supabase Cloud)
+
+The setup above relies on a Supabase project at supabase.com. If you also want to host the database, auth, and storage yourself — to keep all data on-premises, avoid the SaaS dependency, or run air-gapped — you can pair Accounted with [Supabase's official Docker self-hosting stack](https://supabase.com/docs/guides/self-hosting/docker) instead.
+
+This is a more involved path. You take responsibility for backups, TLS certificates, image upgrades, and Postgres operations. It is intended for operators already running Docker services who are comfortable with PostgreSQL.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    user((User))
+    proxy["Reverse proxy + TLS<br/>(Caddy / Traefik / nginx)"]
+    user -- HTTPS --> proxy
+
+    subgraph dnet["shared Docker network"]
+        subgraph app_stack["Accounted stack (this repo)"]
+            app["app<br/>Next.js · :3000"]
+            cron["cron<br/>supercronic"]
+            cron -. Bearer CRON_SECRET .-> app
+        end
+
+        subgraph supabase_stack["Supabase self-host stack"]
+            kong["kong<br/>API gateway · :8000"]
+            studio["studio<br/>dashboard"]
+            db[("postgres<br/>+ pg_cron")]
+            auth["gotrue"]
+            rest["postgrest"]
+            rt["realtime"]
+            storage["storage-api<br/>(+ imgproxy)"]
+            kong --- auth & rest & rt & storage & studio
+            auth & rest & rt & storage --- db
+        end
+
+        app -- "@supabase/supabase-js" --> kong
+    end
+
+    proxy -- app.example.com --> app
+    proxy -- supabase.example.com --> kong
+    proxy -- studio.example.com --> studio
+```
+
+### Setup outline
+
+1. **Bring up Supabase** following [supabase.com/docs/guides/self-hosting/docker](https://supabase.com/docs/guides/self-hosting/docker). Generate your own `JWT_SECRET`, `ANON_KEY`, and `SERVICE_ROLE_KEY` (Supabase ships `sh utils/generate-keys.sh`). Pick a hostname for the API gateway (e.g. `supabase.example.com`) and point `SUPABASE_PUBLIC_URL` / `API_EXTERNAL_URL` at it.
+
+2. **Apply the Accounted migrations** directly via `psql` — the Supabase CLI (`db push`) assumes a cloud project, so run the SQL files against the self-hosted database container:
+
+   ```bash
+   # From the repo root, against the supabase-db container
+   mkdir -p /tmp/accounted-sql-stage
+   cp supabase/migrations/*.sql /tmp/accounted-sql-stage/
+   docker cp /tmp/accounted-sql-stage supabase-db:/tmp/accounted-sql
+   docker exec supabase-db bash -lc '
+     cd /tmp/accounted-sql && for f in $(ls *.sql | sort); do
+       echo "$f"
+       psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f "$f" || exit 1
+     done
+   '
+   ```
+
+3. **Configure `.env`** with your self-hosted endpoints (extract the keys from your Supabase `.env`):
+
+   ```bash
+   NEXT_PUBLIC_SUPABASE_URL=https://supabase.example.com
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=<ANON_KEY from supabase .env>
+   SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY from supabase .env>
+   NEXT_PUBLIC_APP_URL=https://app.example.com
+   CRON_SECRET=<openssl rand -hex 32>
+   NEXT_PUBLIC_SELF_HOSTED=true
+   ```
+
+4. **Allowlist the callback URLs** in GoTrue's redirect list (the Supabase stack's `.env`), then recreate the auth container so it picks up the change:
+
+   ```bash
+   ADDITIONAL_REDIRECT_URLS=https://app.example.com/auth/callback,https://app.example.com/api/auth/callback
+   ```
+   ```bash
+   cd <your-supabase-dir> && docker compose up -d auth
+   ```
+
+5. **Reverse proxy** in front of both hosts. The app container and the Supabase `kong` container must share an external Docker network so the proxy can route to them by name.
+
+### What you give up vs. cloud Supabase
+
+- **Backups** are entirely your responsibility — set up `pg_dump` (or a tool like restic) to off-host storage.
+- **Storage**: the included `storage-api` defaults to the local-filesystem backend. For production durability, use the `docker-compose.s3.yml` overlay and point it at S3 / MinIO.
+- **SMTP**: no built-in mailer. Either set `ENABLE_EMAIL_AUTOCONFIRM=true` for dev/staging, or wire `SMTP_*` env vars in the Supabase stack to a provider (Resend, Postmark, etc.).
+- **Upgrades**: you sync the `supabase/postgres` image yourself and re-run the Accounted migrations after each upgrade.
+
+### Notes
+
+- **`pg_cron`** is included in the `supabase/postgres` image, so the `pg_cron` migration succeeds (unlike on the Supabase free tier — see the standard self-hosting flow above).
+- **MFA**: as on the standard path, `NEXT_PUBLIC_SELF_HOSTED=true` disables enforcement; users may still enable TOTP voluntarily.
 
 ## Troubleshooting
 
