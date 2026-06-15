@@ -352,7 +352,13 @@ flowchart LR
 
 ### What you give up vs. cloud Supabase
 
-- **Backups** are entirely your responsibility — set up `pg_dump` (or a tool like restic) to off-host storage.
+- **Backups** are entirely your responsibility — set up `pg_dump` (or a tool like restic) to off-host storage. As a portable, vendor-neutral *logical* backup on top of the raw dump, you can also export each fiscal period as a standard **SIE4** file via the API and archive it — any Swedish bookkeeping system can re-import it:
+
+  ```bash
+  curl -fsS -H "Authorization: Bearer <reports:read API key>" \
+    "$NEXT_PUBLIC_APP_URL/api/v1/companies/<companyId>/reports/sie-export?period_id=<periodId>" \
+    -o "export_<periodId>.se"
+  ```
 - **Storage**: the included `storage-api` defaults to the local-filesystem backend. For production durability, use the `docker-compose.s3.yml` overlay and point it at S3 / MinIO.
 - **SMTP**: no built-in mailer. Either set `ENABLE_EMAIL_AUTOCONFIRM=true` for dev/staging, or wire `SMTP_*` env vars in the Supabase stack to a provider (Resend, Postmark, etc.).
 - **Upgrades**: you sync the `supabase/postgres` image yourself — your data lives in the DB volume, so a Postgres image bump needs no migration re-run. When you pull a newer Accounted release, apply only the **new** migration files added since your last deploy (the SQL is not idempotent, so re-running already-applied migrations will error). Track which migrations you've applied, e.g. with a checksum/version table.
