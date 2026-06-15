@@ -319,16 +319,13 @@ flowchart LR
 2. **Apply the Accounted migrations** directly via `psql` — the Supabase CLI (`db push`) assumes a cloud project, so run the SQL files against the self-hosted database container:
 
    ```bash
-   # From the repo root, against the supabase-db container
-   mkdir -p /tmp/accounted-sql-stage
-   cp supabase/migrations/*.sql /tmp/accounted-sql-stage/
-   docker cp /tmp/accounted-sql-stage supabase-db:/tmp/accounted-sql
-   docker exec supabase-db bash -lc '
-     cd /tmp/accounted-sql && for f in $(ls *.sql | sort); do
-       echo "$f"
-       psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f "$f" || exit 1
-     done
-   '
+   # From the repo root, stream each migration straight into the supabase-db
+   # container — glob order is already sorted, and nothing is left behind on the
+   # host or in the container.
+   for f in supabase/migrations/*.sql; do
+     echo "Applying $f..."
+     docker exec -i supabase-db psql -v ON_ERROR_STOP=1 -U postgres -d postgres < "$f" || exit 1
+   done
    ```
 
 3. **Configure `.env`** with your self-hosted endpoints (extract the keys from your Supabase `.env`):
@@ -358,7 +355,7 @@ flowchart LR
 - **Backups** are entirely your responsibility — set up `pg_dump` (or a tool like restic) to off-host storage.
 - **Storage**: the included `storage-api` defaults to the local-filesystem backend. For production durability, use the `docker-compose.s3.yml` overlay and point it at S3 / MinIO.
 - **SMTP**: no built-in mailer. Either set `ENABLE_EMAIL_AUTOCONFIRM=true` for dev/staging, or wire `SMTP_*` env vars in the Supabase stack to a provider (Resend, Postmark, etc.).
-- **Upgrades**: you sync the `supabase/postgres` image yourself and re-run the Accounted migrations after each upgrade.
+- **Upgrades**: you sync the `supabase/postgres` image yourself — your data lives in the DB volume, so a Postgres image bump needs no migration re-run. When you pull a newer Accounted release, apply only the **new** migration files added since your last deploy (the SQL is not idempotent, so re-running already-applied migrations will error). Track which migrations you've applied, e.g. with a checksum/version table.
 
 ### Notes
 

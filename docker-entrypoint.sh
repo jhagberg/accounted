@@ -35,6 +35,12 @@ fi
 # CAP_CHOWN / CAP_SETUID is needed, so the container works under `cap_drop: ALL`.
 # Without read_only:true the mount points were created empty in the Dockerfile,
 # so the same cp still works.
+#
+# On a non-tmpfs restart the target dirs persist with their write bits removed
+# (see the immutability step below), so restore owner-write first — otherwise the
+# unprivileged cp -R below fails under `set -e`. Under tmpfs the dirs are empty
+# each start, so this is a no-op.
+chmod -R u+w /app/.next /app/public 2>/dev/null || true
 if [ -d /opt/gnubok-template/.next ]; then
   cp -R /opt/gnubok-template/.next/. /app/.next/
 fi
