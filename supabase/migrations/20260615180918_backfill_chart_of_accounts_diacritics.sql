@@ -1,3 +1,16 @@
+-- NOTE on the version number (20260615180918):
+-- This migration was applied directly to production on 2026-06-15 18:09:18 (via
+-- apply_migration) to repair the ~830 affected companies quickly, so prod's
+-- supabase_migrations.schema_migrations records it under that apply-time version.
+-- It was originally committed to the repo under a later version (20260625120000),
+-- which left prod's 20260615180918 with no matching file -> "Remote migration
+-- versions not found in local migrations directory" aborted `supabase db push`
+-- (and the merge-to-main apply). The file was renamed to 20260615180918 so it
+-- matches the version prod already has: db push now skips it on prod (already
+-- applied) and it runs once, in-order, on fresh databases (CI / new self-hosted).
+-- The SQL below is unchanged from the version prod ran and is idempotent.
+-- (Same rationale as 20260527122059_allow_document_supersession.sql.)
+
 -- Backfill: restore Swedish diacritics (å/ä/ö) on seeded chart-of-accounts names.
 --
 -- The seed_chart_of_accounts() helper shipped between 2026-03-30
