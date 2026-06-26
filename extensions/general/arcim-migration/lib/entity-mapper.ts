@@ -68,6 +68,21 @@ function looksLikeSwedishOrgNumber(orgNumber: string | null | undefined): boolea
 }
 
 /**
+ * Check if a string looks like a Swedish identity number — an organisation
+ * number or personnummer in 10-digit form, or a personnummer in the 12-digit
+ * century-prefixed form (19xx / 20xx). Used to avoid misclassifying a domestic
+ * party as foreign just because its number isn't exactly 10 digits: a 12-digit
+ * personnummer like 19700616-7113 is Swedish, not an unknown foreign org number.
+ */
+function looksLikeSwedishIdNumber(orgNumber: string | null | undefined): boolean {
+  if (!orgNumber) return false
+  const digits = orgNumber.replace(/[-+\s]/g, '')
+  if (!/^\d+$/.test(digits)) return false
+  if (digits.length === 10) return true
+  return digits.length === 12 && /^(19|20)/.test(digits)
+}
+
+/**
  * Company name suffixes that indicate a foreign (non-Swedish) entity.
  * These override the default swedish_business assumption when no other
  * signals (VAT, country code, org number) are available.
@@ -148,11 +163,13 @@ function inferTypeFromVatOrCountry(
   // 3. Swedish-format org number is strong evidence of domestic entity
   if (looksLikeSwedishOrgNumber(orgNumber)) return 'swedish_business'
 
-  // 4. Non-Swedish org number format (wrong digit count) → not Swedish
+  // 4. A number that isn't a Swedish-format identity number → foreign entity.
+  //    Accepts both 10-digit and 12-digit (century-prefixed) Swedish numbers so
+  //    a domestic personnummer like 19700616-7113 isn't treated as foreign.
   if (orgNumber) {
-    const digits = orgNumber.replace(/[-\s]/g, '')
-    if (digits.length > 0 && digits.length !== 10) {
-      // Not a Swedish org number — use name heuristic or default to non_eu
+    const digits = orgNumber.replace(/[-+\s]/g, '')
+    if (digits.length > 0 && !looksLikeSwedishIdNumber(orgNumber)) {
+      // Not a Swedish number — use name heuristic or default to non_eu
       const nameRegion = inferRegionFromName(companyName)
       if (nameRegion === 'eu') return 'eu_business'
       return 'non_eu_business'
@@ -221,15 +238,24 @@ function inferVatRate(taxPercent?: number): number {
 
 export function mapCustomer(dto: CustomerDto, userId: string, companyId: string): Record<string, unknown> {
   const addr = formatAddress(dto.party.postalAddress)
+  const customerType = inferCustomerType(dto)
+  const number = getOrgNumber(dto.party)
+  // The provider exposes a single identity-number field, but Accounted stores a
+  // personnummer in `personal_number` (individuals) and an org number in
+  // `org_number` (businesses). Route it to the column the type expects — else a
+  // Privatperson's personnummer lands in org_number and is hidden by the
+  // individual customer form, which renders personal_number for individuals.
+  const isIndividual = customerType === 'individual'
   return {
     user_id: userId,
     company_id: companyId,
     name: dto.party.name,
-    customer_type: inferCustomerType(dto),
+    customer_type: customerType,
     email: dto.party.contact?.email || null,
     phone: dto.party.contact?.telephone || null,
     ...addr,
-    org_number: getOrgNumber(dto.party),
+    org_number: isIndividual ? null : number,
+    personal_number: isIndividual ? number : null,
     vat_number: dto.vatNumber || null,
     vat_number_validated: false,
     default_payment_terms: dto.defaultPaymentTermsDays || 30,
