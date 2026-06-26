@@ -141,8 +141,8 @@ const navItems: NavItem[] = [
   { href: '/reports', labelKey: 'reports', icon: BarChart3, group: 'redovisning' },
   { href: '/import', labelKey: 'import', icon: Upload, group: 'redovisning' },
   // Personal — "Beta" badge while we validate the end-to-end salary + AGI flow.
-  { href: '/salary', labelKey: 'salary', icon: HandCoins, group: 'personal', modes: ['aktiebolag'], betaBadge: true },
-  { href: '/salary/employees', labelKey: 'employees', icon: Users, group: 'personal', modes: ['aktiebolag'], betaBadge: true },
+  { href: '/salary', labelKey: 'salary', icon: HandCoins, group: 'personal', modes: ['aktiebolag', 'enskild_firma'], betaBadge: true },
+  { href: '/salary/employees', labelKey: 'employees', icon: Users, group: 'personal', modes: ['aktiebolag', 'enskild_firma'], betaBadge: true },
 ]
 
 // Map known extension hrefs to nav translation keys so sidebar labels translate.
