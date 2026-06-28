@@ -145,11 +145,17 @@ export async function importProviderDocuments(
   const [uploads, voucherIndex, periods, vouchers, existingHashes] = await Promise.all([
     fetchBokioUploads(client, accessToken, providerCompanyId),
     fetchBokioVoucherIndex(client, accessToken, providerCompanyId),
+    // A stable `.order('id')` is required: fetchAllRows pages with `.range()`,
+    // and PostgREST paging without a deterministic order can skip or repeat
+    // rows once a table exceeds one page (journal_entries crosses 1000 once
+    // several years are migrated), which would defeat both resolution and the
+    // hash dedup below.
     fetchAllRows<FiscalPeriodRow>(({ from, to }) =>
       supabase
         .from('fiscal_periods')
         .select('id, period_start, period_end')
         .eq('company_id', companyId)
+        .order('id', { ascending: true })
         .range(from, to),
     ),
     fetchAllRows<VoucherRow>(({ from, to }) =>
@@ -158,6 +164,7 @@ export async function importProviderDocuments(
         .select('id, fiscal_period_id, source_voucher_series, source_voucher_number')
         .eq('company_id', companyId)
         .not('source_voucher_number', 'is', null)
+        .order('id', { ascending: true })
         .range(from, to),
     ),
     fetchAllRows<{ sha256_hash: string }>(({ from, to }) =>
@@ -165,6 +172,7 @@ export async function importProviderDocuments(
         .from('document_attachments')
         .select('sha256_hash')
         .eq('company_id', companyId)
+        .order('id', { ascending: true })
         .range(from, to),
     ),
   ])
@@ -182,13 +190,29 @@ export async function importProviderDocuments(
   // Content hashes already archived for this company → idempotent skip set.
   const seenHashes = new Set(existingHashes.map((r) => r.sha256_hash))
 
-  const linkedUploads = uploads.filter(
-    (u) => u.journalEntryId != null && voucherIndex.has(u.journalEntryId),
-  )
+  // Every upload that carries a journalEntryId is a receipt we're responsible
+  // for. Keep them all in scope (don't pre-filter on a resolvable voucher ref)
+  // so an upload whose Bokio entry number didn't parse, or resolves to no
+  // verifikat, is counted as unmatched rather than silently dropped.
+  const linkedUploads = uploads.filter((u) => u.journalEntryId != null)
+
+  const recordUnmatched = (uploadId: string, voucher: string, date: string) => {
+    result.unmatched++
+    if (result.unmatchedSamples.length < 20) {
+      result.unmatchedSamples.push({ uploadId, voucher, date })
+    }
+  }
 
   for (const upload of linkedUploads) {
     result.scanned++
-    const ref = voucherIndex.get(upload.journalEntryId as string) as BokioVoucherRef
+    const ref = voucherIndex.get(upload.journalEntryId as string)
+
+    if (!ref) {
+      // journalEntryId not in the Bokio voucher index (unparseable number, or
+      // an entry the API didn't return) — can't resolve a target verifikat.
+      recordUnmatched(upload.id, '(unresolved)', '')
+      continue
+    }
 
     const periodId = periodIdForDate(periods, ref.date)
     const journalEntryId = periodId
@@ -196,14 +220,7 @@ export async function importProviderDocuments(
       : undefined
 
     if (!journalEntryId) {
-      result.unmatched++
-      if (result.unmatchedSamples.length < 20) {
-        result.unmatchedSamples.push({
-          uploadId: upload.id,
-          voucher: `${ref.series}${ref.number}`,
-          date: ref.date,
-        })
-      }
+      recordUnmatched(upload.id, `${ref.series}${ref.number}`, ref.date)
       continue
     }
 

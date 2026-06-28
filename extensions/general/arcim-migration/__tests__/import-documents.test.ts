@@ -43,6 +43,7 @@ function rangeMockSupabase(byTable: Record<string, unknown[]>): SupabaseClient {
       select: () => node,
       eq: () => node,
       not: () => node,
+      order: () => node,
       range: () => Promise.resolve({ data: byTable[table] ?? [], error: null }),
     }
     return node
@@ -150,6 +151,28 @@ describe('importProviderDocuments', () => {
 
     expect(result).toMatchObject({ provider: 'fortnox', scanned: 0, linked: 0 })
     expect(mockFetchUploads).not.toHaveBeenCalled()
+  })
+
+  it('counts a receipt as unmatched when its journalEntryId is not in the Bokio voucher index', async () => {
+    // e.g. an unparseable journalEntryNumber — must be reported, not dropped.
+    const supabase = wireBokio()
+    mockFetchVoucherIndex.mockResolvedValue(new Map<string, BokioVoucherRef>())
+
+    const result = await importProviderDocuments({ supabase, companyId: COMPANY, userId: USER, consentId: 'c1' })
+
+    expect(result).toMatchObject({ scanned: 1, linked: 0, unmatched: 1 })
+    expect(result.unmatchedSamples[0]).toMatchObject({ uploadId: 'up-1', voucher: '(unresolved)' })
+    expect(mockDownload).not.toHaveBeenCalled()
+  })
+
+  it('handles a company with no uploads as an all-zero no-op', async () => {
+    const supabase = wireBokio()
+    mockFetchUploads.mockResolvedValue([] as never)
+
+    const result = await importProviderDocuments({ supabase, companyId: COMPANY, userId: USER, consentId: 'c1' })
+
+    expect(result).toMatchObject({ scanned: 0, linked: 0, skipped: 0, unmatched: 0, failed: 0 })
+    expect(mockUpload).not.toHaveBeenCalled()
   })
 
   it('is best-effort: a failed receipt is counted, not thrown, and the sweep continues', async () => {
