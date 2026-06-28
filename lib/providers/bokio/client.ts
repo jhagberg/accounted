@@ -172,6 +172,48 @@ export class BokioClient {
     return this.get<T>(accessToken, path);
   }
 
+  /**
+   * Download a binary resource (e.g. an uploaded receipt) as raw bytes.
+   * Bokio serves `/uploads/{id}/download` as application/octet-stream, so the
+   * declared content type must come from the upload's own `contentType`, not
+   * the response header. Same rate-limit + retry envelope as get().
+   */
+  async getBytes(
+    accessToken: string,
+    companyId: string,
+    relativePath: string,
+  ): Promise<{ bytes: ArrayBuffer; contentType: string | null }> {
+    return withRetry(
+      async () => {
+        await this.rateLimiter.acquire();
+        const url = `${this.baseUrl}/companies/${companyId}${relativePath}`;
+        const response = await fetch(url, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          throw new BokioApiError(
+            `Bokio API error: ${response.status} ${response.statusText}`,
+            response.status,
+            body,
+          );
+        }
+
+        return {
+          bytes: await response.arrayBuffer(),
+          contentType: response.headers.get('content-type'),
+        };
+      },
+      {
+        maxAttempts: 3,
+        initialDelayMs: 1000,
+        shouldRetry: isRetryableError,
+      },
+    );
+  }
+
   async getCompany<T>(
     accessToken: string,
     companyId: string,

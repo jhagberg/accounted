@@ -18,6 +18,7 @@ import {
 import { providerSupportsSie, fetchProviderSieFiles, getAllowedFiscalYears } from './lib/sie-fetcher'
 import { mapCompanyInfo } from './lib/entity-mapper'
 import { executeMigration } from './lib/migration-orchestrator'
+import { importProviderDocuments } from './lib/import-documents'
 import { reconcileSupplierInvoiceVouchers } from '@/lib/invoices/bulk-reconcile-supplier-vouchers'
 import type { ArcimProvider } from './types'
 import { ARCIM_PROVIDERS } from './types'
@@ -1091,6 +1092,69 @@ export const arcimMigrationExtension: Extension = {
         } catch (error) {
           log.error('arcim reconcile failed', error as Error)
           return errorResponseFromCode('PROVIDER_MIGRATE_FAILED', moduleLog, {
+            details: { reason: error instanceof Error ? error.message : 'unknown' },
+          })
+        }
+      },
+    },
+
+    // ── Import provider underlag (receipts) and link to verifikat ──
+    // Best-effort, re-runnable. Kept off the migration's critical path: the
+    // Bokio document API is rate-limited (200 req/60s) and a full receipt
+    // sweep issues hundreds of download calls, which would blow the 300s
+    // migration window. Pages /uploads, resolves each receipt's verifikat via
+    // the SIE-preserved Bokio voucher number, and archives it idempotently
+    // (skips content already stored for the company). Pass { dryRun: true } to
+    // preview the match plan without downloading or writing.
+    {
+      method: 'POST',
+      path: '/import-documents',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        const log = ctx?.log ?? console
+        const supabase = ctx?.supabase ?? await (await import('@/lib/supabase/server')).createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+
+        if (!user) {
+          return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        }
+
+        const companyId = ctx?.companyId ?? user.id
+
+        let consentId: string | undefined
+        let dryRun = false
+        try {
+          const body = (await request.json()) as { consentId?: string; dryRun?: boolean }
+          consentId = body?.consentId
+          dryRun = body?.dryRun === true
+        } catch {
+          // empty/invalid body — consentId check below rejects it
+        }
+
+        if (!consentId) {
+          return NextResponse.json({ error: 'consentId is required' }, { status: 400 })
+        }
+
+        try {
+          const result = await importProviderDocuments({
+            supabase,
+            companyId,
+            userId: user.id,
+            consentId,
+            dryRun,
+          })
+          log.info('arcim import-documents completed', {
+            companyId,
+            dryRun,
+            scanned: result.scanned,
+            linked: result.linked,
+            skipped: result.skipped,
+            unmatched: result.unmatched,
+            failed: result.failed,
+          })
+          return NextResponse.json({ success: true, dryRun, result })
+        } catch (error) {
+          log.error('arcim import-documents failed', error as Error)
+          return errorResponseFromCode('PROVIDER_IMPORT_DOCUMENTS_FAILED', moduleLog, {
             details: { reason: error instanceof Error ? error.message : 'unknown' },
           })
         }

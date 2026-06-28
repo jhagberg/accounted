@@ -1395,6 +1395,11 @@ const PROVIDER_MIGRATION: Record<string, StructuredErrorEntry> = {
     message_sv: 'Migrationen från leverantören misslyckades.',
     message_en: 'Provider migration failed.',
   },
+  PROVIDER_IMPORT_DOCUMENTS_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte importera underlag från leverantören.',
+    message_en: 'Failed to import documents from provider.',
+  },
   PROVIDER_DISCONNECT_FAILED: {
     httpStatus: 500,
     message_sv: 'Frånkoppling från leverantören misslyckades.',
