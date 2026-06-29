@@ -191,9 +191,18 @@ export async function executeMigration(options: MigrationOptions): Promise<Migra
             continue
           }
 
+          // Dedup against already-imported records: prefer org-number, but fall
+          // back to name when the party has no org-number. Otherwise org-less
+          // customers (private persons) are re-created on every re-sync, since
+          // the org-number map can never match them.
           const orgNumber = getOrgNumberFromParty(customer.party)
-          if (orgNumber && orgNumberToCustomerId.has(orgNumber)) {
-            customerIdMap.set(customer.id, orgNumberToCustomerId.get(orgNumber)!)
+          const existingCustomerId = orgNumber
+            ? orgNumberToCustomerId.get(orgNumber)
+            : customer.party.name
+              ? nameToCustomerId.get(customer.party.name)
+              : undefined
+          if (existingCustomerId) {
+            customerIdMap.set(customer.id, existingCustomerId)
             skipReasons.duplicate = (skipReasons.duplicate ?? 0) + 1
             skipped++
             continue
@@ -272,9 +281,16 @@ export async function executeMigration(options: MigrationOptions): Promise<Migra
             continue
           }
 
+          // Same org-number-then-name dedup as customers, so org-less suppliers
+          // (e.g. PostNord, IKANO BANK) aren't duplicated on every re-sync.
           const orgNumber = getOrgNumberFromParty(supplier.party)
-          if (orgNumber && orgNumberToSupplierId.has(orgNumber)) {
-            supplierIdMap.set(supplier.id, orgNumberToSupplierId.get(orgNumber)!)
+          const existingSupplierId = orgNumber
+            ? orgNumberToSupplierId.get(orgNumber)
+            : supplier.party.name
+              ? nameToSupplierId.get(supplier.party.name)
+              : undefined
+          if (existingSupplierId) {
+            supplierIdMap.set(supplier.id, existingSupplierId)
             skipReasons.duplicate = (skipReasons.duplicate ?? 0) + 1
             skipped++
             continue
