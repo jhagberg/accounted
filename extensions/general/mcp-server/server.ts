@@ -3410,7 +3410,7 @@ export const tools: McpTool[] = [
       // default silently truncated any period with >1000 entry lines (wrong
       // sums, false "not balanced"), and it ignored opening balances.
       // generateTrialBalance paginates and rolls IB forward.
-      const trialBalance = await generateTrialBalance(supabase, companyId, periodId)
+      const trialBalance = await generateTrialBalance(supabase, companyId, periodId!)
 
       const rows = trialBalance.rows
         .map((r) => {
